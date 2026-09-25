@@ -130,6 +130,16 @@ class PostgresStorage:
                 )
                 return [row[0] for row in cursor.fetchall()]
 
+    def list_tables(self) -> list[str]:
+        """Return all application tables in the public PostgreSQL schema."""
+        with self._psycopg.connect(self.database_url) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT tablename FROM pg_catalog.pg_tables "
+                    "WHERE schemaname = 'public' ORDER BY tablename"
+                )
+                return [row[0] for row in cursor.fetchall()]
+
     def upsert(
         self,
         table: str,
@@ -460,6 +470,15 @@ class SqliteStorage:
         table_name = table.removesuffix(".csv")
         with self._connect() as connection:
             return [row[1] for row in connection.execute(f"PRAGMA table_info({self._identifier(table_name)})")]
+
+    def list_tables(self) -> list[str]:
+        """Return all user-created tables in the local SQLite database."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            ).fetchall()
+            return [str(row[0]) for row in rows]
 
     def upsert(self, table: str, fieldnames: Iterable[str], record: dict[str, Any], conflict_fields: Iterable[str]) -> None:
         table_name = table.removesuffix(".csv")

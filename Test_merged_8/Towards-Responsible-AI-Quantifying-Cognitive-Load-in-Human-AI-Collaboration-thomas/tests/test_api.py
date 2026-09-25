@@ -286,6 +286,28 @@ class ApiTests(unittest.TestCase):
         self.assertIn("https://example.com/fact", captured["messages"][1]["content"])
         self.assertEqual(events[-1]["type"], "done")
 
+    def test_streaming_chat_completes_without_rag_documents(self) -> None:
+        """A completed LLM stream must not fail when no RAG document was used."""
+        original_stream = main.stream_llm
+        main.stream_llm = lambda *_args: iter(["answer"])
+        session, headers = self.start_participant("No RAG Document Test")
+        try:
+            response = self.client.post(
+                "/api/llm/chat/stream",
+                headers=headers,
+                json={
+                    "participant_id": session["participant_id"], "question_id": "Q1",
+                    "provider": "Groq", "message": "Explain a palindrome", "history": [],
+                },
+            )
+        finally:
+            main.stream_llm = original_stream
+
+        self.assertEqual(response.status_code, 200)
+        events = [main.json.loads(line) for line in response.text.splitlines()]
+        self.assertEqual([event["content"] for event in events if event["type"] == "token"], ["answer"])
+        self.assertEqual(events[-1]["type"], "done")
+
     def test_unsupported_provider_is_rejected_before_persistence(self) -> None:
         session, headers = self.start_participant("Removed Provider Test")
         response = self.client.post(

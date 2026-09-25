@@ -13,16 +13,23 @@ CogniTrack is organized as a FastAPI backend with a browser frontend.
 - `data/` — local runtime data and migration backups; do not share this folder.
 - `.env` — private local secrets; do not share this file.
 
-## Current storage
+## Storage
 
-Set `DATABASE_URL` to store assessment and camera-analysis data in PostgreSQL:
+For local development, the checked-in configuration uses a SQLite database in
+`data/cognitrack.db`; it is created automatically on first startup:
+
+```env
+DATABASE_URL=sqlite:///data/cognitrack.db
+```
+
+To store assessment and camera-analysis data in PostgreSQL, replace it with a
+working database URL:
 
 ```env
 DATABASE_URL=postgresql://cognitrack:your-password@127.0.0.1:5432/AtharvaDB
 ```
 
-`DATABASE_URL` is required. The application does not fall back to SQLite.
-Tables are created automatically on first use in PostgreSQL.
+Tables are created automatically on first use with either storage backend.
 
 ### RAG vector search
 
@@ -104,6 +111,24 @@ admin or host credential is missing. Role access tokens expire after
 uvicorn main:app --app-dir backend --reload --host 127.0.0.1 --port 8002
 ```
 
+The backend is a Python/FastAPI application, so do not run `npm run dev` from
+`backend/`. From the project folder you can instead use:
+
+```powershell
+npm run dev:backend
+```
+
+This command uses `venv\\Scripts\\python.exe`, created by the setup step. If
+you copied the project from another computer, recreate the virtual environment
+instead of reusing its copied `venv` or `.venv` folder:
+
+```powershell
+Remove-Item -Recurse -Force venv
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+```
+
 API health check:
 
 ```text
@@ -120,6 +145,22 @@ http://127.0.0.1:8002/docs
 
 From the project folder, run `start.bat`. FastAPI serves both the frontend and
 the API at `http://127.0.0.1:8002/`.
+
+## Run the frontend development server
+
+The Vite development server is optional: FastAPI already serves the frontend
+when the backend is running. To use Vite with live frontend reloads, open a
+second terminal in the project folder and run:
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+It starts at `http://127.0.0.1:5173` and proxies `/api` requests to the backend
+at port 8002. To launch both development servers from the project folder, run
+`npm install` once there and then `npm run dev`.
 
 ## Notes
 

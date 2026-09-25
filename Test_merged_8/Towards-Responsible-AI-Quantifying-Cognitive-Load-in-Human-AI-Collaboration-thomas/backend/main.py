@@ -77,7 +77,7 @@ storage = create_storage(DATABASE_URL)
 
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant").strip()
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b").strip()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini").strip()
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").strip().rstrip("/")
@@ -1604,6 +1604,29 @@ def groq_client() -> Any:
     return Groq(api_key=GROQ_API_KEY)
 
 
+def normalize_llm_provider(provider: str) -> str:
+    """Normalize the UI provider name and accept the common Grok/Groq typo."""
+    normalized = provider.strip().lower()
+    return "groq" if normalized == "grok" else normalized
+
+
+def groq_request_error(exc: Exception) -> HTTPException:
+    """Turn Groq SDK failures into a useful, non-secret error for the UI."""
+    logger.exception("Groq chat request failed")
+    status_code = getattr(exc, "status_code", None)
+    if status_code == 401:
+        detail = "Groq rejected GROQ_API_KEY. Create a valid key in the Groq console and update .env."
+    elif status_code == 403:
+        detail = f"Groq denied access to model '{GROQ_MODEL}'. Check the model and account permissions."
+    elif status_code == 404:
+        detail = f"Groq model '{GROQ_MODEL}' is unavailable. Set GROQ_MODEL=openai/gpt-oss-20b in .env."
+    elif status_code == 429:
+        detail = "Groq rate limit or account quota reached. Wait briefly or check the Groq console."
+    else:
+        detail = "Groq could not complete the request. Check GROQ_API_KEY, GROQ_MODEL, and your internet connection."
+    return HTTPException(status_code=502, detail=detail)
+
+
 def json_request(url: str, payload: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any]:
     request = urllib.request.Request(
         url,
@@ -1702,15 +1725,20 @@ def messages_with_web_context(messages: list[dict[str, str]], results: list[dict
 
 
 def stream_llm(provider: str, messages: list[dict[str, str]]):
-    normalized = provider.strip().lower()
+    normalized = normalize_llm_provider(provider)
     if normalized == "groq":
-        completion = groq_client().chat.completions.create(
-            model=GROQ_MODEL, messages=messages, temperature=0.3, max_tokens=1200, stream=True
-        )
-        for part in completion:
-            content = part.choices[0].delta.content
-            if content:
-                yield content
+        try:
+            completion = groq_client().chat.completions.create(
+                model=GROQ_MODEL, messages=messages, temperature=0.3, max_tokens=1200, stream=True
+            )
+            for part in completion:
+                content = part.choices[0].delta.content
+                if content:
+                    yield content
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise groq_request_error(exc) from exc
         return
     if normalized == "ollama":
         request = urllib.request.Request(
@@ -1770,7 +1798,7 @@ def stream_llm(provider: str, messages: list[dict[str, str]]):
 
 
 def request_llm(provider: str, messages: list[dict[str, str]]) -> tuple[str, str, str]:
-    normalized = provider.strip().lower()
+    normalized = normalize_llm_provider(provider)
     if normalized == "chatgpt":
         if not OPENAI_API_KEY:
             raise HTTPException(status_code=503, detail="OPENAI_API_KEY is not configured.")
@@ -1802,8 +1830,13 @@ def request_llm(provider: str, messages: list[dict[str, str]]) -> tuple[str, str
         except (KeyError, TypeError) as exc:
             raise HTTPException(status_code=502, detail="Ollama returned an invalid chat response.") from exc
     if normalized == "groq":
-        completion = groq_client().chat.completions.create(model=GROQ_MODEL, messages=messages, temperature=0.3, max_tokens=1200)
-        return completion.choices[0].message.content or "", "Groq", GROQ_MODEL
+        try:
+            completion = groq_client().chat.completions.create(model=GROQ_MODEL, messages=messages, temperature=0.3, max_tokens=1200)
+            return completion.choices[0].message.content or "", "Groq", GROQ_MODEL
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise groq_request_error(exc) from exc
     raise HTTPException(status_code=400, detail="Provider must be ChatGPT, Ollama, or Groq.")
 
 
@@ -3584,30 +3617,39 @@ def download_all_data_excel(
     if not token_data or token_data[0] != "admin":
         raise HTTPException(status_code=403, detail="Administrator access required")
     
-    import pandas as pd
-    import io
+    try:
+        import pandas as pd
+        import openpyxl  # noqa: F401 - pandas uses this engine to create .xlsx files.
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Excel export requires openpyxl. Run: pip install -r requirements.txt",
+        ) from exc
     
     output = io.BytesIO()
     
-    tables_to_export = [
-        "participants",
-        "sessions",
-        "answers",
-        "multimodal_tracking",
-        "eye_tracking",
-        "facial_expression",
-        "question_tracking"
-    ]
+    tables_to_export = storage.list_tables()
+    used_sheet_names: set[str] = set()
+
+    def sheet_name_for(table: str) -> str:
+        base = table[:31] or "table"
+        candidate = base
+        suffix = 1
+        while candidate.lower() in used_sheet_names:
+            suffix_text = f"_{suffix}"
+            candidate = f"{base[:31 - len(suffix_text)]}{suffix_text}"
+            suffix += 1
+        used_sheet_names.add(candidate.lower())
+        return candidate
     
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         for table in tables_to_export:
-            records = storage.list_records(table, 100_000)
+            records = storage.list_records(table, 1_000_000)
             if records:
                 df = pd.DataFrame(records)
-                sheet_name = table[:31]
-                df.to_excel(writer, sheet_name=sheet_name, index=False)
+                df.to_excel(writer, sheet_name=sheet_name_for(table), index=False)
             else:
-                pd.DataFrame().to_excel(writer, sheet_name=table[:31], index=False)
+                pd.DataFrame().to_excel(writer, sheet_name=sheet_name_for(table), index=False)
                 
     output.seek(0)
     
@@ -3808,12 +3850,13 @@ def chat_stream(
 ) -> StreamingResponse:
     if payload.participant_id != authenticated_id:
         raise HTTPException(status_code=403, detail="Participant token does not match the requested chat")
+    normalized_provider = normalize_llm_provider(payload.provider)
+    if normalized_provider not in {"chatgpt", "ollama", "groq"}:
+        raise HTTPException(status_code=400, detail="Provider must be ChatGPT, Ollama, or Groq.")
     request_time = utc_now()
     prompt_id = f"PROMPT-{uuid.uuid4().hex}"
     prompt_sentiment = analyze_prompt_sentiment(payload.message)
-    model_name = {"chatgpt": OPENAI_MODEL, "ollama": OLLAMA_MODEL, "groq": GROQ_MODEL}.get(
-        payload.provider.lower(), "unknown"
-    )
+    model_name = {"chatgpt": OPENAI_MODEL, "ollama": OLLAMA_MODEL, "groq": GROQ_MODEL}[normalized_provider]
     storage.append(
         "chat_logs.csv",
         [
@@ -3852,7 +3895,10 @@ def chat_stream(
             "recorded_at": request_time,
         },
     )
-    rag = {"matches": [], "context": "", "top_similarity": 0.0}
+    # RAG retrieval is optional for chat. Keep the complete result shape even
+    # when no document context is used, so post-stream audit persistence cannot
+    # turn a successfully delivered model answer into a false error event.
+    rag = {"matches": [], "context": "", "top_similarity": 0.0, "document_ids": []}
     pipeline_id = f"RAG-{uuid.uuid4().hex}"
     storage.append(
         "rag_pipeline", RAG_PIPELINE_FIELDS,

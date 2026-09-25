@@ -2,7 +2,16 @@
 setlocal
 cd /d "%~dp0"
 
-set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
+set "PYTHON_EXE=%~dp0venv\Scripts\python.exe"
+if exist "%PYTHON_EXE%" (
+  "%PYTHON_EXE%" -c "import sys" >nul 2>&1
+  if errorlevel 1 (
+    set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
+  )
+) else (
+  set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
+)
+
 if exist "%PYTHON_EXE%" (
   "%PYTHON_EXE%" -c "import sys" >nul 2>&1
   if errorlevel 1 (
