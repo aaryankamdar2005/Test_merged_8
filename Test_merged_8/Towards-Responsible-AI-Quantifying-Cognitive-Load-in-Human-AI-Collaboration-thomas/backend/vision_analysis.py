@@ -446,11 +446,21 @@ class FacialExpressionAnalyzer:
         self.model_path = Path(model_path).resolve()
 
         if not self.model_path.exists():
-            raise FileNotFoundError(
-                "Facial-expression model was not found at:\n"
-                f"{self.model_path}\n\n"
-                "Run setup_facial_model.py before starting the application."
-            )
+            import urllib.request
+            import tempfile
+            tmp_model_path = Path(tempfile.gettempdir()) / self.model_path.name
+            if not tmp_model_path.exists():
+                print(f"[VISION INFO] Model not found at {self.model_path}. Downloading to {tmp_model_path}...")
+                model_url = "https://github.com/chenxindaaa/emotion_recognition/raw/refs/heads/master/models/facial_expression_recognition_mobilefacenet_2022july.onnx"
+                try:
+                    urllib.request.urlretrieve(model_url, str(tmp_model_path))
+                    print("[VISION INFO] Download complete.")
+                except Exception as e:
+                    raise FileNotFoundError(
+                        f"Facial-expression model was not found at {self.model_path} "
+                        f"and could not be downloaded: {e}"
+                    )
+            self.model_path = tmp_model_path
 
         if not 0.0 <= minimum_detection_confidence <= 1.0:
             raise ValueError(

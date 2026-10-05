@@ -2309,7 +2309,7 @@ def analyze_facial_expression(
     except (OSError, RuntimeError) as exc:
         raise HTTPException(
             status_code=503,
-            detail="Facial-expression model is unavailable",
+            detail=f"Facial-expression model is unavailable: {exc}",
         ) from exc
 
     return {
