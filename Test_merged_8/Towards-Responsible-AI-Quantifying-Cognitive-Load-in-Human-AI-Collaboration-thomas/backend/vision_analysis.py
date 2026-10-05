@@ -64,15 +64,25 @@ class VisionAnalyzer:
         if self._face_mesh is None:
             try:
                 import mediapipe as mp
-                solutions = getattr(mp, "solutions", None)
-                if solutions is not None and hasattr(solutions, "face_mesh"):
-                    self._face_mesh = solutions.face_mesh.FaceMesh(
-                        max_num_faces=5,
-                        refine_landmarks=True,
-                        min_detection_confidence=0.6,
-                        min_tracking_confidence=0.6,
-                    )
-            except Exception:
+                from mediapipe.tasks.python import vision
+                import os
+                
+                model_path = os.path.abspath(os.path.join(os.path.dirname(__file__), 'face_landmarker.task'))
+                if not os.path.exists(model_path):
+                    print("[VISION ERROR] face_landmarker.task not found at", model_path)
+                    return None
+                    
+                options = vision.FaceLandmarkerOptions(
+                    base_options=mp.tasks.BaseOptions(model_asset_path=model_path),
+                    num_faces=5,
+                    min_face_detection_confidence=0.6,
+                    min_tracking_confidence=0.6
+                )
+                self._face_mesh = vision.FaceLandmarker.create_from_options(options)
+            except Exception as e:
+                import traceback
+                print(f"[VISION ERROR] Failed to initialize MediaPipe FaceLandmarker: {e}")
+                traceback.print_exc()
                 self._face_mesh = None
         return self._face_mesh
 
@@ -183,6 +193,7 @@ class VisionAnalyzer:
 
         mesh = self._mesh()
         if mesh is None:
+            print("[VISION] Error: MediaPipe FaceMesh failed to initialize. Returning empty results.")
             return {
                 "face_detected": False,
                 "pupils_detected": False,
@@ -193,8 +204,11 @@ class VisionAnalyzer:
         frame = self._decode(data_url)
         height, width = frame.shape[:2]
         with self._inference_lock:
-            results = mesh.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        if not results or not getattr(results, "multi_face_landmarks", None):
+            import mediapipe as mp
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            results = mesh.detect(mp_image)
+        if not results or not getattr(results, "face_landmarks", None):
+            print(f"[VISION] Participant {participant_id}: No face detected in current frame.")
             return {
                 "face_detected": False,
                 "pupils_detected": False,
@@ -203,7 +217,8 @@ class VisionAnalyzer:
                 "tracking_confidence": 0.0,
             }
 
-        face_landmark_sets = [face.landmark for face in results.multi_face_landmarks[:5]]
+        print(f"[VISION] Participant {participant_id}: Face detected successfully!")
+        face_landmark_sets = results.face_landmarks[:5]
         landmarks = face_landmark_sets[0]
         faces_detected = len(face_landmark_sets)
         left_iris = self._iris(landmarks, LEFT_IRIS, width, height)
@@ -459,16 +474,22 @@ class FacialExpressionAnalyzer:
         self._validate_model_structure()
 
         # MediaPipe detects and tracks the face landmarks.
-        solutions = getattr(mp, "solutions", None)
-        if solutions is not None and hasattr(solutions, "face_mesh"):
-            self._face_mesh = solutions.face_mesh.FaceMesh(
-                static_image_mode=False,
-                max_num_faces=1,
-                refine_landmarks=False,
-                min_detection_confidence=minimum_detection_confidence,
+        from mediapipe.tasks.python import vision
+        import mediapipe as mp
+        import os
+        try:
+            lm_model_path = os.path.abspath(os.path.join(os.path.dirname(__file__), 'face_landmarker.task'))
+            options = vision.FaceLandmarkerOptions(
+                base_options=mp.tasks.BaseOptions(model_asset_path=lm_model_path),
+                num_faces=1,
+                min_face_detection_confidence=minimum_detection_confidence,
                 min_tracking_confidence=minimum_tracking_confidence,
             )
-        else:
+            self._face_mesh = vision.FaceLandmarker.create_from_options(options)
+        except Exception as e:
+            import traceback
+            print(f"[VISION ERROR] FacialExpressionAnalyzer failed to initialize FaceLandmarker: {e}")
+            traceback.print_exc()
             self._face_mesh = None
 
     def _create_onnx_session(self) -> ort.InferenceSession:
@@ -778,6 +799,9 @@ class FacialExpressionAnalyzer:
         """
 
         processing_started = time.perf_counter()
+        import numpy as np
+        import mediapipe as mp
+        import cv2
 
         if frame_bgr is None:
             return self._invalid_result(
@@ -810,16 +834,17 @@ class FacialExpressionAnalyzer:
             cv2.COLOR_BGR2RGB,
         )
 
-        detection_result = self._face_mesh.process(frame_rgb)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+        detection_result = self._face_mesh.detect(mp_image)
 
-        if not detection_result.multi_face_landmarks:
+        if not detection_result.face_landmarks:
             return self._invalid_result(
                 reason="no_face",
                 processing_started=processing_started,
             )
 
         face_landmarks = (
-            detection_result.multi_face_landmarks[0].landmark
+            detection_result.face_landmarks[0]
         )
 
         alignment_points = self._extract_alignment_points(
@@ -1755,17 +1780,12 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any
 
-try:
-    import cv2
-    import numpy as np
-    from facial_expression_processor import FacialExpressionProcessor
-
-    FACIAL_IMPORT_ERROR: ImportError | None = None
-except ImportError as exc:  # Keep the rest of the API available if FER is unavailable.
-    cv2 = None  # type: ignore[assignment]
-    np = None  # type: ignore[assignment]
-    FacialExpressionProcessor = Any  # type: ignore[assignment,misc]
-    FACIAL_IMPORT_ERROR = exc
+import cv2
+import numpy as np
+# FacialExpressionProcessor is defined earlier in this file (was merged from
+# facial_expression_processor.py).  The original import referenced the old
+# standalone module which no longer exists.
+FACIAL_IMPORT_ERROR: ImportError | None = None
 
 
 @dataclass

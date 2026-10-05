@@ -1,0 +1,1 @@
+import cv2, numpy as np; from backend.vision_analysis import FacialExpressionAnalyzer; analyzer = FacialExpressionAnalyzer(); frame = np.zeros((480, 640, 3), dtype=np.uint8); res = analyzer.analyze_frame(frame); print(res)

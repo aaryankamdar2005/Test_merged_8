@@ -487,9 +487,10 @@ class SqliteStorage:
         with self._schema_lock, self._connect() as connection:
             self._ensure_table(connection, table_name, fields)
             conflict_sql = ", ".join(self._identifier(field) for field in conflicts)
+            index_predicate = " WHERE \"record_kind\" = 'summary'" if table_name == "tracking_data" else ""
             index_name = self._identifier(f"uq_{table_name}_{'_'.join(conflicts)}")
             connection.execute(
-                f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} ON {self._identifier(table_name)} ({conflict_sql})"
+                f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} ON {self._identifier(table_name)} ({conflict_sql}){index_predicate}"
             )
             quoted_fields = ", ".join(self._identifier(field) for field in fields)
             placeholders = ", ".join("?" for _ in fields)
@@ -499,7 +500,7 @@ class SqliteStorage:
             )
             connection.execute(
                 f"INSERT INTO {self._identifier(table_name)} ({quoted_fields}) VALUES ({placeholders}) "
-                f"ON CONFLICT ({conflict_sql}) DO UPDATE SET {updates}",
+                f"ON CONFLICT ({conflict_sql}){index_predicate} DO UPDATE SET {updates}",
                 [self._serialize(record.get(field, "")) for field in fields],
             )
 
