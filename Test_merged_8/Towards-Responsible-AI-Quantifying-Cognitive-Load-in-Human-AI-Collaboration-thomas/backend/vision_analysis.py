@@ -1223,11 +1223,16 @@ class FacialExpressionProcessor:
             self._start_second(elapsed_second)
 
         elif elapsed_second < self._current_second:
-            raise ValueError(
-                "Frames must be supplied in chronological order. "
+            logger.warning(
+                f"Dropping out-of-order frame. "
                 f"Current second is {self._current_second}, "
                 f"but received second {elapsed_second}."
             )
+            return {
+                "frame_result": {"status": "dropped_out_of_order"},
+                "completed_second": None,
+                "storage_events": []
+            }
 
         elif elapsed_second > self._current_second:
             completed_second = self._finalize_current_second()
