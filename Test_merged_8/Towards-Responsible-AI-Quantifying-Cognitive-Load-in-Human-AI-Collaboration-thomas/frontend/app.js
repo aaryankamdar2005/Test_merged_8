@@ -130,7 +130,7 @@ let cameraStream = null;
 let cameraCaptureVideo = null;
 
 // One common timer for BOTH eye tracking and facial-expression analysis.
-const SHARED_CAPTURE_FPS = 5;
+const SHARED_CAPTURE_FPS = 3;
 const SHARED_CAPTURE_INTERVAL_MS = Math.round(1000 / SHARED_CAPTURE_FPS);
 
 let sharedCaptureTimer = null;
@@ -1797,31 +1797,25 @@ async function captureSharedTrackingFrame() {
     // 5. SEND THE SAME FRAME TO BOTH COMPONENTS
     // ---------------------------------------------------------
 
-    const [eyeResult, facialResult] =
-      await Promise.allSettled([
+    let eyeResult;
+    let facialResult;
+    try {
+      const response = await safePost(
+        '/vision/frame',
+        {
+          ...commonFrameData,
+          persist: true
+        },
+        state.participantSessionToken
+      );
+      eyeResult = { status: 'fulfilled', value: response.eyeResult };
+      facialResult = { status: 'fulfilled', value: response.facialResult };
+    } catch (error) {
+      eyeResult = { status: 'rejected', reason: error };
+      facialResult = { status: 'rejected', reason: error };
+    }
 
-        safePost(
-          '/eye-tracking/frame',
-          {
-            ...commonFrameData,
-
-            // Persist every analyzed Eye frame for the dedicated Eye Tracking
-            // Admin table and CSV export.
-            persist: true
-          },
-          state.participantSessionToken
-        ),
-
-        safePost(
-          '/facial-expression/frame',
-          commonFrameData,
-          state.participantSessionToken
-        )
-
-      ]);
-
-
-    // ---------------------------------------------------------
+      // ---------------------------------------------------------
     // 6. HANDLE EYE RESULT
     // ---------------------------------------------------------
 

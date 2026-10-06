@@ -2345,6 +2345,89 @@ def analyze_facial_expression(
      }
 
 
+@app.post("/api/vision/frame")
+def analyze_vision_frame(
+    payload: VisionFrame,
+    authenticated_id: str = Depends(active_participant),
+) -> dict[str, Any]:
+    """Process a single frame for both eye-tracking and facial-expression in one HTTP request to reduce overhead."""
+    if payload.participant_id != authenticated_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Participant token does not match the requested record",
+        )
+
+    # 1. Eye Tracking
+    try:
+        metrics = eye_tracking_analyzer.analyze_eye_frame(
+            payload.participant_id, payload.image, payload.calibration_point,
+        )
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ImportError as exc:
+        raise HTTPException(status_code=503, detail="Dependencies are not installed") from exc
+
+    if payload.persist:
+        record = {
+            "participant_id": payload.participant_id,
+            "question_id": payload.question_id,
+            "task_number": payload.task_number,
+            "captured_at": payload.captured_at,
+            "received_at": utc_now(),
+        }
+        for field in EYE_TRACKING_STORAGE_FIELDS:
+            record[field] = metrics.get(field, "")
+        if payload.calibration_point is not None:
+            record["pupils_detected"] = metrics.get("pupils_detected", "")
+            record["calibration_point"] = payload.calibration_point
+            record["calibration_target_x"] = payload.calibration_target_x if payload.calibration_target_x is not None else ""
+            record["calibration_target_y"] = payload.calibration_target_y if payload.calibration_target_y is not None else ""
+        append_tracking("eye_tracking", "sample", record)
+
+    # 2. Facial Expression
+    try:
+        facial_result = facial_expression_service.process_frame(
+            participant_id=payload.participant_id,
+            question_id=payload.question_id,
+            task_number=payload.task_number,
+            frame_id=payload.frame_id,
+            elapsed_ms=payload.elapsed_ms,
+            elapsed_second=payload.elapsed_second,
+            image_data_url=payload.image,
+        )
+        saved_events = persist_facial_events(
+            participant_id=payload.participant_id,
+            question_id=payload.question_id,
+            task_number=payload.task_number,
+            captured_at=payload.captured_at,
+            events=facial_result.get("storage_events", []),
+        )
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (OSError, RuntimeError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Facial-expression model is unavailable: {exc}",
+        ) from exc
+
+    return {
+        "success": True,
+        "eyeResult": {"success": True, "metrics": metrics},
+        "facialResult": {
+            "success": True,
+            "participant_id": payload.participant_id,
+            "question_id": payload.question_id,
+            "frame_id": payload.frame_id,
+            "elapsed_ms": payload.elapsed_ms,
+            "elapsed_second": payload.elapsed_second,
+            "captured_at": payload.captured_at,
+            "frame_result": facial_result.get("frame_result", {}),
+            "completed_second": facial_result.get("completed_second"),
+            "saved_events": saved_events,
+        }
+    }
+
+
 @app.post("/api/camera-tracking/second")
 def save_camera_second_summary(
     payload: CameraSecondSummary,
