@@ -49,6 +49,7 @@ from rag_pipeline import chunk_text, classify_direction, embed_text, retrieve, c
 from session_cli_analysis import build_session_cli_summary
 from feature_importance import calculate_feature_importances
 from model_accuracy import calculate_model_accuracies
+from research_metrics_data import RESEARCH_METRICS
 
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent
@@ -2056,9 +2057,19 @@ def mouse_tracker_javascript() -> FileResponse:
     return FileResponse(FRONTEND_DIR / "mouse_tracker.js", media_type="application/javascript", headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
 
 
-@app.get("/assets/brain.glb", include_in_schema=False)
-def brain_model_asset() -> FileResponse:
-    return FileResponse(FRONTEND_DIR / "assets" / "brain.glb", media_type="model/gltf-binary", headers={"Cache-Control": "public, max-age=3600"})
+@app.get("/assets/{asset_path:path}", include_in_schema=False)
+def frontend_assets(asset_path: str) -> FileResponse:
+    target_file = FRONTEND_DIR / "assets" / asset_path
+    if not target_file.is_file():
+        raise HTTPException(status_code=404, detail="Asset not found")
+    media_type = None
+    if target_file.suffix.lower() == ".png":
+        media_type = "image/png"
+    elif target_file.suffix.lower() == ".glb":
+        media_type = "model/gltf-binary"
+    elif target_file.suffix.lower() == ".svg":
+        media_type = "image/svg+xml"
+    return FileResponse(target_file, media_type=media_type, headers={"Cache-Control": "public, max-age=3600"})
 
 
 @app.get("/api/health")
@@ -2870,6 +2881,18 @@ def group_model_accuracies(role: str = Depends(authenticated_role)) -> dict[str,
             rows = sorted(rows, key=lambda row: str(row.get("id", "")))
             MODEL_ACCURACY_CACHE = calculate_model_accuracies(rows)
         return {"success": True, **MODEL_ACCURACY_CACHE}
+
+
+@app.get("/api/analytics/research-metrics")
+def get_research_metrics() -> dict[str, Any]:
+    """Return comprehensive empirical metrics, multimodal formulas, and plot metadata from Untitled28 (1).ipynb."""
+    return {"success": True, **RESEARCH_METRICS}
+
+
+@app.get("/api/dashboard/research-metrics")
+def dashboard_research_metrics() -> dict[str, Any]:
+    """Return research metrics for dashboard integration."""
+    return {"success": True, **RESEARCH_METRICS}
 
 
 @app.get("/api/dashboard/ml-analytics-legacy")

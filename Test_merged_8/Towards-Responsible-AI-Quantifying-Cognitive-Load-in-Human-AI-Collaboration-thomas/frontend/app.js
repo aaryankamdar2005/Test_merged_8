@@ -1,3 +1,4 @@
+import { renderResearchMetricsPage } from './research_metrics_viewer.js';
 let BACKEND_URL_FROM_ENV = '';
 try {
   BACKEND_URL_FROM_ENV = import.meta.env.BACKEND_URL;
@@ -504,6 +505,7 @@ function renderLogin() {
           <button class="role-login-btn" id="hostLoginBtn" type="button">Host Login</button>
           <button class="role-login-btn admin" id="adminLoginBtn" type="button">Admin Login</button>
           <button class="role-login-btn dashboard" id="dashboardLoginBtn" type="button">Dashboard Login</button>
+          <button class="role-login-btn research" id="researchMetricsBtn" type="button" style="border-color:#18c77e; color:#18c77e;">Research Metrics</button>
           <div class="badge">● Secure Session</div>
         </div>
       </header>
@@ -592,6 +594,8 @@ function renderLogin() {
   document.getElementById('hostLoginBtn').addEventListener('click', () => renderRoleLogin('host'));
   document.getElementById('adminLoginBtn').addEventListener('click', () => renderRoleLogin('admin'));
   document.getElementById('dashboardLoginBtn').addEventListener('click', renderDashboardCredentialLogin);
+  const researchBtn = document.getElementById('researchMetricsBtn');
+  if (researchBtn) researchBtn.addEventListener('click', () => renderResearchMetricsPage('login'));
 
   const loginForm = document.getElementById('loginForm');
   const loginFields = [
@@ -2681,6 +2685,7 @@ function renderDashboardLoginChoices() {
           <p>Open the group-level participant analytics dashboard.</p>
           <div class="dashboard-choice-actions">
             <button class="primary" id="groupDashboardBtn" type="button">Open Group User Dashboard</button>
+            <button class="secondary" id="researchMetricsChoiceBtn" type="button" style="margin-top: 10px;">📊 View Empirical Research & Benchmark Metrics</button>
           </div>
         </section>
       </main>
@@ -2691,6 +2696,8 @@ function renderDashboardLoginChoices() {
     sessionStorage.removeItem(DASHBOARD_PARTICIPANT_STORAGE_KEY);
     renderIndependentDashboard('group');
   };
+  const researchChoiceBtn = document.getElementById('researchMetricsChoiceBtn');
+  if (researchChoiceBtn) researchChoiceBtn.onclick = () => renderResearchMetricsPage('dashboard');
 }
 
 function renderDashboardCredentialLogin() {
@@ -2752,7 +2759,7 @@ function renderIndependentDashboard(mode) {
   const description = mode === 'group'
     ? 'Aggregated participant performance, completion, status, and time insights.'
     : 'Select any participant to view their specific session data.';
-  app.innerHTML = `<div class="role-page"><header class="topbar"><div class="brand"><div class="logo">C</div><div><h1>CogniTrack <span style="color:#38dd9a">AI</span></h1><small>${title}</small></div></div><div class="role-actions"><span class="badge">● Dashboard authenticated</span><button class="danger-btn" id="dashboardLogout" type="button">Logout</button></div></header><main class="dashboard-wrap"><section class="dashboard-heading"><div><div class="eyebrow">${mode.toUpperCase()} VIEW</div><h2>${title}</h2><p>${description}</p></div><div class="dashboard-heading-actions"><button class="secondary" id="previousDashboard" type="button">Previous</button><button class="secondary" id="refreshIndependentDashboard" type="button">Refresh</button></div></section><div id="independentDashboardContent"><article class="card panel">Loading dashboard data…</article></div></main></div>`;
+  app.innerHTML = `<div class="role-page"><header class="topbar"><div class="brand"><div class="logo">C</div><div><h1>CogniTrack <span style="color:#38dd9a">AI</span></h1><small>${title}</small></div></div><div class="role-actions"><span class="badge">● Dashboard authenticated</span><button class="danger-btn" id="dashboardLogout" type="button">Logout</button></div></header><main class="dashboard-wrap"><section class="dashboard-heading"><div><div class="eyebrow">${mode.toUpperCase()} VIEW</div><h2>${title}</h2><p>${description}</p></div><div class="dashboard-heading-actions"><button class="secondary" id="previousDashboard" type="button">Previous</button><button class="secondary" id="researchMetricsNavBtn" type="button">📊 Research Metrics</button><button class="secondary" id="refreshIndependentDashboard" type="button">Refresh</button></div></section><div id="independentDashboardContent"><article class="card panel">Loading dashboard data…</article></div></main></div>`;
   document.getElementById('independentDashboardContent').innerHTML = '<article class="card panel"><div class="section-label">DATA CLEARED</div><p>No Individual User or Group User dashboard data is currently displayed.</p></article>';
   document.getElementById('previousDashboard').onclick = () => {
     clearInterval(dashboardTimer);
@@ -2773,6 +2780,8 @@ function renderIndependentDashboard(mode) {
     renderLogin();
   };
   document.getElementById('refreshIndependentDashboard').onclick = () => renderIndependentDashboard(mode);
+  const indResearchNavBtn = document.getElementById('researchMetricsNavBtn');
+  if (indResearchNavBtn) indResearchNavBtn.onclick = () => renderResearchMetricsPage('dashboard');
   clearInterval(dashboardTimer);
   loadIndependentDashboard(mode);
 }
@@ -2967,10 +2976,12 @@ function renderRoleDashboard(role, dashboardMode = 'individual') {
         <div class="role-actions"><span class="badge">● ${roleName} authenticated</span><button class="danger-btn" id="roleLogout" type="button">Logout</button></div>
       </header>
       <main class="dashboard-wrap">
-        <section class="dashboard-heading"><div><div class="eyebrow">${roleName.toUpperCase()} PORTAL</div><h2>${dashboardTitle}</h2><p>${dashboardDescription}</p></div><div class="dashboard-heading-actions"><button class="secondary" id="refreshDashboard">Refresh</button>${role === 'admin' ? '<button class="primary" id="downloadDataBtn" style="margin-left: 10px;">Download Data (Excel)</button>' : ''}</div></section>
+        <section class="dashboard-heading"><div><div class="eyebrow">${roleName.toUpperCase()} PORTAL</div><h2>${dashboardTitle}</h2><p>${dashboardDescription}</p></div><div class="dashboard-heading-actions"><button class="secondary" id="refreshDashboard">Refresh</button><button class="secondary" id="adminResearchMetricsBtn" type="button" style="margin-left: 10px;">📊 CLI Research Metrics</button>${role === 'admin' ? '<button class="primary" id="downloadDataBtn" style="margin-left: 10px;">Download Data (Excel)</button>' : ''}</div></section>
         <div id="dashboardContent"><article class="card panel">Loading live participant data…</article></div>
       </main>
     </div>`;
+  const adminResearchBtn = document.getElementById('adminResearchMetricsBtn');
+  if (adminResearchBtn) adminResearchBtn.onclick = () => renderResearchMetricsPage('dashboard');
   document.getElementById('roleLogout').onclick = () => {
     clearInterval(dashboardTimer);
     const token = state.authToken;
@@ -3543,3 +3554,10 @@ restoreAuthenticatedRole().then(async restored => {
     renderLogin();
   }
 });
+
+if (typeof window !== 'undefined') {
+  window.renderLogin = renderLogin;
+  window.renderIndependentDashboard = renderIndependentDashboard;
+  window.renderRoleDashboard = renderRoleDashboard;
+  window.renderResearchMetricsPage = renderResearchMetricsPage;
+}
