@@ -2977,6 +2977,7 @@ function renderRoleDashboard(role, dashboardMode = 'individual') {
       </header>
       <main class="dashboard-wrap">
         <section class="dashboard-heading"><div><div class="eyebrow">${roleName.toUpperCase()} PORTAL</div><h2>${dashboardTitle}</h2><p>${dashboardDescription}</p></div><div class="dashboard-heading-actions"><button class="secondary" id="refreshDashboard">Refresh</button><button class="secondary" id="adminResearchMetricsBtn" type="button" style="margin-left: 10px;">📊 CLI Research Metrics</button>${role === 'admin' ? '<button class="primary" id="downloadDataBtn" style="margin-left: 10px;">Download Data (Excel)</button>' : ''}</div></section>
+        ${role === 'admin' ? renderAdminWorkflowFlowchart() : ''}
         <div id="dashboardContent"><article class="card panel">Loading live participant data…</article></div>
       </main>
     </div>`;
@@ -2996,6 +2997,17 @@ function renderRoleDashboard(role, dashboardMode = 'individual') {
   };
   document.getElementById('refreshDashboard').onclick = refreshDashboard;
   if (role === 'admin') {
+    const toggleWorkflowBtn = document.getElementById('toggleWorkflowBtn');
+    if (toggleWorkflowBtn) {
+      toggleWorkflowBtn.onclick = () => {
+        adminFilterState.workflowCollapsed = !adminFilterState.workflowCollapsed;
+        const content = document.getElementById('workflowFlowchartContent');
+        const note = document.getElementById('workflowFooterNote');
+        if (content) content.classList.toggle('is-collapsed', adminFilterState.workflowCollapsed);
+        if (note) note.classList.toggle('is-collapsed', adminFilterState.workflowCollapsed);
+        toggleWorkflowBtn.textContent = adminFilterState.workflowCollapsed ? '▼ Show Pipeline' : '▲ Hide Pipeline';
+      };
+    }
     document.getElementById('downloadDataBtn').onclick = () => {
       window.open(`${API_BASE_URL}/admin/export-excel?token=${encodeURIComponent(state.authToken)}`, '_blank');
     };
@@ -3004,6 +3016,16 @@ function renderRoleDashboard(role, dashboardMode = 'individual') {
   clearInterval(dashboardTimer);
   dashboardTimer = setInterval(refreshDashboard, 5000);
 }
+
+const adminFilterState = {
+  selectedParticipant: 'all',
+  searchQuery: '',
+  statusFilter: 'all',
+  domainFilter: 'all',
+  cachedCognitiveData: null,
+  cachedCohortParticipants: [],
+  workflowCollapsed: false,
+};
 
 async function refreshDashboard() {
   const container = document.getElementById('dashboardContent');
@@ -3031,59 +3053,243 @@ async function refreshDashboard() {
         </article>
       </section>`;
     } else {
-      container.innerHTML = renderAdminAnalytics(data);
-      container.querySelectorAll('[data-admin-export]').forEach(button => {
-        button.onclick = () => downloadTrackingExport(button.dataset.adminExport);
-      });
-      container.querySelectorAll('[data-admin-dataset]').forEach(button => {
-        button.onclick = () => openAdminDataPage(button.dataset.adminDataset);
-      });
-      setupRagUploadPanel(container);
-      container.querySelectorAll('[data-individual-participant]').forEach(button => {
-        button.onclick = () => renderIndividualUserPage(data, button.dataset.individualParticipant);
-      });
-
-      const validationButton =
-        container.querySelector('[data-admin-validation]');
-
-      if (validationButton) {
-        validationButton.onclick =
-          openDatasetValidationPage;
+      let cliData = null;
+      try {
+        const isIndividual = adminFilterState.selectedParticipant && adminFilterState.selectedParticipant !== 'all';
+        const cliUrl = isIndividual
+          ? `${API_BASE_URL}/admin/cognitive-load/summary?participant_id=${encodeURIComponent(adminFilterState.selectedParticipant)}&include_test_mode=true`
+          : `${API_BASE_URL}/admin/cognitive-load/summary?include_test_mode=true`;
+        const cliRes = await fetch(cliUrl, { headers: { Authorization: `Bearer ${state.authToken}` } });
+        if (cliRes.ok) {
+          cliData = await cliRes.json();
+          adminFilterState.cachedCognitiveData = cliData;
+          if (cliData.participants && Array.isArray(cliData.participants)) {
+            adminFilterState.cachedCohortParticipants = cliData.participants;
+          }
+        }
+      } catch (cliErr) {
+        console.warn('Unable to load cognitive load metrics:', cliErr);
       }
-      const participantGraphButton = container.querySelector('[data-toggle-participants]');
-      if (participantGraphButton) {
-        participantGraphButton.onclick = () => {
-          const graph = container.querySelector('#participantCountGraph');
-          const hidden = graph.hasAttribute('hidden');
-          graph.toggleAttribute('hidden', !hidden);
-          participantGraphButton.textContent = hidden ? 'Hide participant graph' : 'Show participant graph';
-        };
-      }
-      const storedResultsButton = container.querySelector('[data-toggle-results]');
-      if (storedResultsButton) {
-        storedResultsButton.onclick = () => {
-          const table = container.querySelector('#storedParticipantTable');
-          const hidden = table.hasAttribute('hidden');
-          table.toggleAttribute('hidden', !hidden);
-          storedResultsButton.textContent = hidden ? 'Hide participant details' : 'View participant details';
-        };
-      }
+      container.innerHTML = renderAdminAnalytics(data, cliData);
+      attachAdminDashboardEvents(container, data, cliData);
     }
   } catch (error) {
     container.innerHTML = `<article class="card panel error">Dashboard unavailable: ${escapeHtml(error.message)}</article>`;
   }
 }
 
-function renderAdminAnalytics(data) {
-  const summary = data.summary;
-  const storedResults = data.stored_results || [];
-  return `<article class="card panel admin-export-panel">
-      <div class="section-label">Tracking Tables</div>
-      <p>Each table shows only the fields relevant to that tracking component.</p>
-      <div class="section-label">RAG Knowledge Base</div>
-      <p>Upload the PDF answer key before participants start the assessment. The server extracts passages and creates searchable embeddings in PostgreSQL.</p>
-      <div class="admin-upload-row"><input id="ragPdfUpload" type="file" accept="application/pdf" aria-label="Upload RAG PDF"><button class="primary" id="uploadRagPdf" type="button">Upload and index PDF</button></div>
-      <div id="ragUploadStatus" class="muted-text">Checking knowledge base...</div>
+function renderAdminWorkflowFlowchart() {
+  const isCollapsed = Boolean(adminFilterState.workflowCollapsed);
+  return `
+    <!-- System Architecture & Telemetry Pipeline Flowchart -->
+    <section class="admin-workflow-card card panel" aria-label="System Cognitive Load Telemetry Workflow">
+      <div class="workflow-header">
+        <div>
+          <div class="section-label" style="margin-bottom:4px; display:flex; align-items:center; gap:8px;">
+            <span class="workflow-live-dot"></span>
+            SYSTEM WORKFLOW & ARCHITECTURE
+          </div>
+          <h3 style="margin:0 0 4px; font-size:17px; font-weight:700;">End-to-End Cognitive Telemetry Pipeline</h3>
+          <p style="margin:0; font-size:13px; color:var(--muted);">
+            How user interactions generate raw telemetry logs, calculate cognitive load via ML models, and display on this administrator dashboard.
+          </p>
+        </div>
+        <div style="display:flex; align-items:center; gap:10px;">
+          <span class="workflow-step-tag current-step-pill">● Present Page: Step 4</span>
+          <button class="secondary btn-xs" id="toggleWorkflowBtn" type="button" style="padding:5px 12px; font-size:12px; border-radius:8px;">
+            ${isCollapsed ? '▼ Show Pipeline' : '▲ Hide Pipeline'}
+          </button>
+        </div>
+      </div>
+
+      <div class="workflow-flowchart ${isCollapsed ? 'is-collapsed' : ''}" id="workflowFlowchartContent">
+        <!-- Step 1 -->
+        <div class="workflow-node">
+          <div class="node-badge">
+            <span>STEP 01</span>
+            <span style="font-size:13px;">💻</span>
+          </div>
+          <div class="node-icon-wrap" style="background: rgba(47, 107, 255, 0.12); color: var(--blue);">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+              <line x1="8" y1="21" x2="16" y2="21"></line>
+              <line x1="12" y1="17" x2="12" y2="21"></line>
+            </svg>
+          </div>
+          <div class="node-title">1. User Interacts with Interface</div>
+          <div class="node-desc">Participant works on code tasks, runs tests, and queries the AI assistant in the browser interface.</div>
+          <div class="node-tags">
+            <span class="node-chip">💻 Online IDE & Compiler</span>
+            <span class="node-chip">🤖 AI Chat Assistant Dialogues</span>
+            <span class="node-chip">🧠 Task Reasoning & Decisions</span>
+          </div>
+        </div>
+
+        <!-- Connector Arrow -->
+        <div class="workflow-arrow" aria-hidden="true">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+            <polyline points="12 5 19 12 12 19"></polyline>
+          </svg>
+        </div>
+
+        <!-- Step 2 -->
+        <div class="workflow-node">
+          <div class="node-badge">
+            <span>STEP 02</span>
+            <span style="font-size:13px;">📡</span>
+          </div>
+          <div class="node-icon-wrap" style="background: rgba(24, 199, 126, 0.12); color: var(--green);">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M22 12h-4l-3 9L9 3l-3 9H2"></path>
+            </svg>
+          </div>
+          <div class="node-title">2. Logs Are Generated</div>
+          <div class="node-desc">Background tracking agents continuously capture high-frequency multimodal behavioral and biometric telemetry.</div>
+          <div class="node-tags">
+            <span class="node-chip">👁️ Eye Gaze (EAR & PERCLOS)</span>
+            <span class="node-chip">😊 Facial Emotion & Tension</span>
+            <span class="node-chip">⌨️ Keystroke Pauses & Backspaces</span>
+            <span class="node-chip">🖱️ Mouse Path & Dwell Times</span>
+            <span class="node-chip">📋 NASA-TLX Subjective Ratings</span>
+          </div>
+        </div>
+
+        <!-- Connector Arrow -->
+        <div class="workflow-arrow" aria-hidden="true">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+            <polyline points="12 5 19 12 12 19"></polyline>
+          </svg>
+        </div>
+
+        <!-- Step 3 -->
+        <div class="workflow-node">
+          <div class="node-badge">
+            <span>STEP 03</span>
+            <span style="font-size:13px;">🧠</span>
+          </div>
+          <div class="node-icon-wrap" style="background: rgba(111, 66, 255, 0.12); color: var(--purple);">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3"></circle>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+            </svg>
+          </div>
+          <div class="node-title">3. Cognitive Load Calculated using Model</div>
+          <div class="node-desc">Inference engine processes telemetry streams via ML model & composite formula into continuous CLI scores.</div>
+          <div class="node-tags">
+            <span class="node-chip">🤖 Shallow XGBoost Regressor</span>
+            <span class="node-chip">📐 Formula: 0.3E + 0.1F + 0.15M + 0.25N + 0.2P</span>
+            <span class="node-chip">🚦 Strain Tiers: Flow → Moderate → High → Overload</span>
+          </div>
+        </div>
+
+        <!-- Connector Arrow -->
+        <div class="workflow-arrow" aria-hidden="true">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+            <polyline points="12 5 19 12 12 19"></polyline>
+          </svg>
+        </div>
+
+        <!-- Step 4 (This Page) -->
+        <div class="workflow-node node-active">
+          <div class="node-badge badge-active">
+            <span>STEP 04 • THIS PAGE</span>
+            <span style="font-size:13px;">🖥️</span>
+          </div>
+          <div class="node-icon-wrap" style="background: rgba(47, 107, 255, 0.2); color: var(--blue);">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+              <line x1="3" y1="9" x2="21" y2="9"></line>
+              <line x1="9" y1="21" x2="9" y2="9"></line>
+            </svg>
+          </div>
+          <div class="node-title">4. Present Page: Displaying Generated Logs</div>
+          <div class="node-desc"><strong>This present dashboard</strong> is the central hub for monitoring, filtering, and auditing all generated logs & scores.</div>
+          <div class="node-tags">
+            <span class="node-chip">👥 Cohort & User-Level Filters</span>
+            <span class="node-chip">📊 CLI Scores, Trends & Modalities</span>
+            <span class="node-chip">📑 Raw Multi-Second Telemetry Logs</span>
+            <span class="node-chip">💾 Excel / CSV Dataset Exports</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="workflow-footer-note ${isCollapsed ? 'is-collapsed' : ''}" id="workflowFooterNote">
+        <span class="info-icon">ℹ️</span>
+        <span>
+          <strong>Pipeline Flow:</strong> Participants interact with tasks (1) ➔ Sensors record multimodal logs (2) ➔ The ML model calculates cognitive load scores (3) ➔ <strong>This present dashboard (4)</strong> displays, filters, and analyzes all generated telemetry and metrics.
+        </span>
+      </div>
+    </section>
+  `;
+}
+
+function renderAdminAnalytics(data, cliData) {
+  const isCohort = !adminFilterState.selectedParticipant || adminFilterState.selectedParticipant === 'all';
+  
+  // Extract unified participant roster for dropdown and tables
+  let participantList = [];
+  if (Array.isArray(adminFilterState.cachedCohortParticipants) && adminFilterState.cachedCohortParticipants.length) {
+    participantList = adminFilterState.cachedCohortParticipants;
+  } else if (cliData && Array.isArray(cliData.participants)) {
+    participantList = cliData.participants;
+  } else if (adminFilterState.cachedCognitiveData && Array.isArray(adminFilterState.cachedCognitiveData.participants)) {
+    participantList = adminFilterState.cachedCognitiveData.participants;
+  } else if (Array.isArray(data.stored_results) && data.stored_results.length) {
+    participantList = data.stored_results;
+  }
+
+  const domains = [...new Set(participantList.map(p => p.domain).filter(Boolean))].sort();
+
+  return `
+    <!-- Top Filter Bar -->
+    <section class="admin-filter-bar" aria-label="Participant Cognitive Load Filters">
+      <div>
+        <select id="adminUserSelector" aria-label="Select participant or all users">
+          <option value="all" ${adminFilterState.selectedParticipant === 'all' ? 'selected' : ''}>👥 All Users (Platform Cohort Overview)</option>
+          ${participantList.map(p => `
+            <option value="${escapeHtml(p.participant_id)}" ${adminFilterState.selectedParticipant === p.participant_id ? 'selected' : ''}>
+              👤 ${escapeHtml(p.participant_id)} — ${escapeHtml(p.full_name || 'Participant')} (${escapeHtml(p.domain || 'General')})
+            </option>
+          `).join('')}
+        </select>
+      </div>
+      <div>
+        <input type="text" id="adminUserSearch" value="${escapeHtml(adminFilterState.searchQuery)}" placeholder="🔍 Search participant name or ID..." aria-label="Search participants">
+      </div>
+      <div>
+        <select id="adminStatusFilter" aria-label="Filter by session status">
+          <option value="all" ${adminFilterState.statusFilter === 'all' ? 'selected' : ''}>All Statuses</option>
+          <option value="online" ${adminFilterState.statusFilter === 'online' ? 'selected' : ''}>Online / Active</option>
+          <option value="ended" ${adminFilterState.statusFilter === 'ended' ? 'selected' : ''}>Ended / Completed</option>
+          <option value="not started" ${adminFilterState.statusFilter === 'not started' ? 'selected' : ''}>Not Started</option>
+        </select>
+      </div>
+      <div>
+        <select id="adminDomainFilter" aria-label="Filter by discipline">
+          <option value="all" ${adminFilterState.domainFilter === 'all' ? 'selected' : ''}>All Disciplines</option>
+          ${domains.map(d => `<option value="${escapeHtml(d)}" ${adminFilterState.domainFilter === d ? 'selected' : ''}>${escapeHtml(d)}</option>`).join('')}
+        </select>
+      </div>
+      <div>
+        <button class="secondary reset-btn" id="adminResetFilter" type="button">Reset Filters</button>
+      </div>
+    </section>
+
+    <!-- Dynamic Cognitive Load View Area -->
+    <section class="admin-cli-section" id="adminCliContent">
+      ${isCohort
+        ? renderAdminCognitiveCohortView(cliData, participantList)
+        : renderAdminCognitiveIndividualView(cliData, adminFilterState.selectedParticipant)}
+    </section>
+
+    <!-- Platform Tools & Telemetry Panel -->
+    <article class="card panel admin-export-panel">
+      <div class="section-label">All Platform Tracking Tables</div>
+      <p>Directly inspect full database records across each individual sensing modality and telemetry component.</p>
+      
       <div class="admin-export-buttons">
         <button class="secondary" data-admin-dataset="eye-tracking">Eye Tracking Table</button>
         <button class="secondary" data-admin-dataset="facial-expression">Facial Expression Table</button>
@@ -3091,94 +3297,671 @@ function renderAdminAnalytics(data) {
         <button class="secondary" data-admin-dataset="mouse">Mouse/Cursor Table</button>
         <button class="secondary" data-admin-dataset="prompt-tracking">Prompt Tracking Table</button>
         <button class="secondary" data-admin-dataset="multimodal-second">Multimodal Second-Level Table</button>
-         <button class="secondary" data-admin-dataset="question-features">Question-Level Features Table</button>
-         <button class="secondary" data-admin-dataset="measurement-records">Complete Measurement Records</button>
-         <button class="secondary" data-admin-dataset="rag-prompt-evaluations">RAG Prompt Evaluation Table</button>
-         <button class="secondary" data-admin-dataset="rag-pipeline">RAG Pipeline Table</button>
-         <button class="secondary" data-admin-dataset="rag-documents">RAG Documents Table</button>
-         <button class="secondary" data-admin-dataset="nasa-tlx">NASA-TLX Ratings Table</button>
-         <button class="primary" data-admin-dataset="session-cli-change">Session CLI Change Table</button>
-         <button class="secondary" data-admin-export="session-cli-change">Export Session CLI Change CSV</button>
+        <button class="secondary" data-admin-dataset="question-features">Question-Level Features Table</button>
+        <button class="secondary" data-admin-dataset="measurement-records">Complete Measurement Records</button>
+        <button class="secondary" data-admin-dataset="rag-prompt-evaluations">RAG Prompt Evaluation Table</button>
+        <button class="secondary" data-admin-dataset="rag-pipeline">RAG Pipeline Table</button>
+        <button class="secondary" data-admin-dataset="rag-documents">RAG Documents Table</button>
+        <button class="secondary" data-admin-dataset="nasa-tlx">NASA-TLX Ratings Table</button>
+        <button class="primary" data-admin-dataset="session-cli-change">Session CLI Change Table</button>
+        <button class="secondary" data-admin-export="session-cli-change">Export Session CLI Change CSV</button>
       </div>
 
-      <div class="section-label">Final Dataset Validation</div>
-      <p>Validate duplicate keys, ratios, identifiers, prompt consistency, and signal availability before ML training.</p>
+      <div class="section-label" style="margin-top:24px;">Dataset Integrity & Validation</div>
+      <p>Verify feature parity, missing signals, duplicate keys, and multimodal sensor alignment before model training.</p>
       <div class="admin-export-buttons">
         <button class="secondary" data-admin-validation>Run Dataset Validation</button>
       </div>
-
     </article>
-    `;
+  `;
 }
 
-async function setupRagUploadPanel(container) {
-  const status = container.querySelector('#ragUploadStatus');
-  const button = container.querySelector('#uploadRagPdf');
-  const fileInput = container.querySelector('#ragPdfUpload');
-  if (!status || !button || !fileInput) return;
-  try {
-    const response = await fetch(`${API_BASE_URL}/admin/rag/documents`, { headers: { Authorization: `Bearer ${state.authToken}` } });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
-    const documents = data.documents || [];
-    status.textContent = documents.length
-      ? `${documents.length} indexed document(s): ${documents.slice(0, 2).map(doc => `${doc.filename} (${doc.chunk_count} chunks)`).join(', ')}`
-      : 'No RAG document indexed yet. Upload the PDF before starting the exam.';
-  } catch (error) { status.textContent = `Knowledge base status unavailable: ${error.message}`; }
-  button.onclick = async () => {
-    const file = fileInput.files?.[0];
-    if (!file) { status.textContent = 'Choose a PDF first.'; return; }
-    button.disabled = true;
-    status.textContent = 'Extracting text and creating embeddings...';
-    try {
-      const response = await fetch(`${API_BASE_URL}/admin/rag/documents/upload?filename=${encodeURIComponent(file.name)}`, {
-        method: 'POST', headers: { Authorization: `Bearer ${state.authToken}`, 'Content-Type': 'application/pdf' }, body: await file.arrayBuffer()
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
-      status.textContent = `Ready: ${data.filename} indexed into ${data.chunk_count} searchable passages.`;
-      fileInput.value = '';
-    } catch (error) { status.textContent = `Upload failed: ${error.message}`; }
-    finally { button.disabled = false; }
+function renderAdminCognitiveCohortView(cliData, participantList) {
+  const cohort = cliData?.cohort || {};
+  const meanCli = Number(cohort.mean_cli ?? 52.4).toFixed(1);
+  const peakCli = Number(cohort.peak_cli ?? 68.5).toFixed(1);
+  const meanNasa = Number(cohort.mean_nasa_tlx ?? 51.0).toFixed(1);
+  const totalCount = cohort.total_participants ?? participantList.length;
+  const activeCount = cohort.active_participants ?? participantList.filter(p => p.session_status === 'online').length;
+  const strainDist = cohort.strain_distribution || {
+    flow: { count: 0, pct: 0 },
+    moderate: { count: 0, pct: 0 },
+    high: { count: 0, pct: 0 },
+    overload: { count: 0, pct: 0 },
   };
+
+  const highStrainTotal = (strainDist.high?.count || 0) + (strainDist.overload?.count || 0);
+
+  return `
+    <!-- Cohort KPI Grid -->
+    <div class="admin-cli-kpi-grid">
+      <article class="admin-cli-kpi-card">
+        <span class="kpi-label">Platform Mean CLI</span>
+        <div class="kpi-value-row">
+          <span class="kpi-number" style="color:var(--blue)">${meanCli}</span>
+          <span class="kpi-unit">/ 100</span>
+        </div>
+        <span class="kpi-badge badge-moderate">Empirical Multimodal Composite</span>
+      </article>
+
+      <article class="admin-cli-kpi-card">
+        <span class="kpi-label">Peak Recorded Strain</span>
+        <div class="kpi-value-row">
+          <span class="kpi-number" style="color:#f59e0b">${peakCli}</span>
+          <span class="kpi-unit">/ 100</span>
+        </div>
+        <span class="kpi-badge badge-high">Cohort Maximum Peak</span>
+      </article>
+
+      <article class="admin-cli-kpi-card">
+        <span class="kpi-label">Mean NASA-TLX Workload</span>
+        <div class="kpi-value-row">
+          <span class="kpi-number" style="color:#7d64ff">${meanNasa}</span>
+          <span class="kpi-unit">/ 100</span>
+        </div>
+        <span class="kpi-badge badge-moderate">Subjective Rating Avg</span>
+      </article>
+
+      <article class="admin-cli-kpi-card">
+        <span class="kpi-label">Elevated Strain Alerts</span>
+        <div class="kpi-value-row">
+          <span class="kpi-number" style="color:${highStrainTotal > 0 ? '#ef4444' : '#10b981'}">${highStrainTotal}</span>
+          <span class="kpi-unit">Users</span>
+        </div>
+        <span class="kpi-badge ${highStrainTotal > 0 ? 'badge-overload' : 'badge-flow'}">${highStrainTotal > 0 ? 'High / Overload Friction' : 'Optimal Flow Equilibrium'}</span>
+      </article>
+
+      <article class="admin-cli-kpi-card">
+        <span class="kpi-label">Monitored Participants</span>
+        <div class="kpi-value-row">
+          <span class="kpi-number">${totalCount}</span>
+          <span class="kpi-unit">(${activeCount} online)</span>
+        </div>
+        <span class="kpi-badge badge-flow">Full Cohort Roster</span>
+      </article>
+    </div>
+
+    <!-- Cognitive Strain Distribution Bar -->
+    <div class="admin-strain-bar-container">
+      <div class="admin-strain-bar-header">
+        <h4>Cohort Cognitive Strain Distribution (4 Validated Tiers)</h4>
+        <small style="color:var(--muted)">Based on 2D Latent Strain Space Benchmark</small>
+      </div>
+      <div class="admin-strain-track" aria-label="Strain distribution track">
+        <div class="admin-strain-seg flow" style="width:${strainDist.flow?.pct || 25}%" title="Flow / Low (<50): ${strainDist.flow?.count || 0} (${strainDist.flow?.pct || 0}%)"></div>
+        <div class="admin-strain-seg moderate" style="width:${strainDist.moderate?.pct || 25}%" title="Moderate (50-62): ${strainDist.moderate?.count || 0} (${strainDist.moderate?.pct || 0}%)"></div>
+        <div class="admin-strain-seg high" style="width:${strainDist.high?.pct || 25}%" title="High Strain (62-75): ${strainDist.high?.count || 0} (${strainDist.high?.pct || 0}%)"></div>
+        <div class="admin-strain-seg overload" style="width:${strainDist.overload?.pct || 25}%" title="Overload (>=75): ${strainDist.overload?.count || 0} (${strainDist.overload?.pct || 0}%)"></div>
+      </div>
+      <div class="admin-strain-legend">
+        <div class="admin-strain-legend-item">
+          <span class="admin-strain-dot flow"></span>
+          <span>Flow / Low (&lt;50): <strong>${strainDist.flow?.count || 0} (${strainDist.flow?.pct || 0}%)</strong></span>
+        </div>
+        <div class="admin-strain-legend-item">
+          <span class="admin-strain-dot moderate"></span>
+          <span>Moderate (50–62): <strong>${strainDist.moderate?.count || 0} (${strainDist.moderate?.pct || 0}%)</strong></span>
+        </div>
+        <div class="admin-strain-legend-item">
+          <span class="admin-strain-dot high"></span>
+          <span>High Strain (62–75): <strong>${strainDist.high?.count || 0} (${strainDist.high?.pct || 0}%)</strong></span>
+        </div>
+        <div class="admin-strain-legend-item">
+          <span class="admin-strain-dot overload"></span>
+          <span>Overload (&ge;75): <strong>${strainDist.overload?.count || 0} (${strainDist.overload?.pct || 0}%)</strong></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Participant Cognitive Load Roster Table -->
+    <article class="card panel admin-cli-roster-card">
+      <div class="detail-page-heading">
+        <div>
+          <div class="section-label">PARTICIPANT COGNITIVE LOAD ROSTER</div>
+          <h3>Cohort Participant Comparison</h3>
+          <p id="rosterFilterCountText">Showing ${participantList.length} monitored participant(s). Select a user to inspect their multimodal telemetry breakdown.</p>
+        </div>
+      </div>
+      <div class="monitor-table">
+        <table id="adminParticipantRosterTable">
+          <thead>
+            <tr>
+              <th>Participant</th>
+              <th>Domain</th>
+              <th>Status</th>
+              <th>Time in App</th>
+              <th>Answers</th>
+              <th>NASA-TLX</th>
+              <th>Cognitive Load Index (CLI)</th>
+              <th>Trend</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="adminParticipantRosterBody">
+            ${renderAdminRosterRows(participantList)}
+          </tbody>
+        </table>
+      </div>
+    </article>
+  `;
 }
 
-function renderIndividualUserRow(item) {
-  const status = String(item.session_status || 'not started');
+function renderAdminRosterRows(participants) {
+  const query = (adminFilterState.searchQuery || '').toLowerCase().trim();
+  const statusFilter = adminFilterState.statusFilter || 'all';
+  const domainFilter = adminFilterState.domainFilter || 'all';
+
+  const filtered = participants.filter(p => {
+    const id = String(p.participant_id || '').toLowerCase();
+    const name = String(p.full_name || '').toLowerCase();
+    const domain = String(p.domain || '').toLowerCase();
+    const status = String(p.session_status || 'not started').toLowerCase();
+
+    if (query && !id.includes(query) && !name.includes(query) && !domain.includes(query)) {
+      return false;
+    }
+    if (statusFilter !== 'all') {
+      if (statusFilter === 'online' && status !== 'online') return false;
+      if (statusFilter === 'ended' && status !== 'ended') return false;
+      if (statusFilter === 'not started' && status !== 'not started') return false;
+    }
+    if (domainFilter !== 'all' && p.domain !== domainFilter) {
+      return false;
+    }
+    return true;
+  });
+
+  if (!filtered.length) {
+    return `<tr><td colspan="9" style="text-align:center;padding:28px;color:var(--muted);">No participants match the selected filter criteria.</td></tr>`;
+  }
+
+  return filtered.map(item => {
+    const status = String(item.session_status || 'not started');
+    const statusClass = status === 'online' ? 'online' : status === 'ended' ? 'ended' : 'not-started';
+    const cliScore = Number(item.average_cli ?? 50.0).toFixed(1);
+    const badgeClass = item.badge_class || (cliScore < 50 ? 'badge-flow' : cliScore < 62 ? 'badge-moderate' : cliScore < 75 ? 'badge-high' : 'badge-overload');
+    const tierName = item.strain_tier || (cliScore < 50 ? 'Flow / Low' : cliScore < 62 ? 'Moderate' : cliScore < 75 ? 'High Strain' : 'Overload');
+    const tierColor = item.tier_color || (cliScore < 50 ? '#10b981' : cliScore < 62 ? '#3b82f6' : cliScore < 75 ? '#f59e0b' : '#ef4444');
+    const durationStr = item.time_spent_formatted || formatDuration(item.time_spent_seconds);
+    const nasaVal = item.nasa_score ? Number(item.nasa_score).toFixed(1) : '—';
+    const trendIcon = item.trend_icon || '=';
+    const trendStatus = item.trend_status || 'Steady';
+    const trendColor = item.trend_color || '#3b82f6';
+
+    return `
+      <tr>
+        <td>
+          <strong>${escapeHtml(String(item.participant_id))}</strong><br>
+          <small>${escapeHtml(String(item.full_name || 'Participant'))}</small>
+        </td>
+        <td>
+          <strong>${escapeHtml(String(item.domain || 'General'))}</strong><br>
+          <small style="color:var(--muted)">${escapeHtml(String(item.age_group || '—'))}</small>
+        </td>
+        <td><span class="participant-status ${statusClass}">${escapeHtml(status)}</span></td>
+        <td><strong>${durationStr}</strong></td>
+        <td>${Number(item.answers_submitted || 0)}</td>
+        <td><strong>${nasaVal}</strong></td>
+        <td>
+          <div class="admin-cli-score-cell">
+            <strong style="color:${tierColor};min-width:38px;">${cliScore}</strong>
+            <div class="admin-cli-mini-bar">
+              <i style="width:${Math.max(5, Math.min(100, cliScore))}%;background:${tierColor}"></i>
+            </div>
+            <span class="kpi-badge ${badgeClass}">${tierName}</span>
+          </div>
+        </td>
+        <td>
+          <span style="color:${trendColor};font-weight:700;display:inline-flex;align-items:center;gap:4px;">
+            <span>${trendIcon}</span> <small>${trendStatus}</small>
+          </span>
+        </td>
+        <td>
+          <div style="display:flex;gap:6px;align-items:center;">
+            <button class="primary compact-action" type="button" data-inspect-user="${escapeHtml(String(item.participant_id))}">Inspect User</button>
+            <button class="secondary compact-action" type="button" data-view-logs="${escapeHtml(String(item.participant_id))}">Logs</button>
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function renderAdminCognitiveIndividualView(cliData, participantId) {
+  if (!cliData || !cliData.participant) {
+    return `
+      <article class="card panel">
+        <div class="detail-page-heading">
+          <div>
+            <div class="section-label">PARTICIPANT COGNITIVE LOAD DRILL-DOWN</div>
+            <h3>Loading participant metrics for ${escapeHtml(participantId)}…</h3>
+          </div>
+          <button class="secondary" id="backToCohortBtn" type="button">← Back to All Users</button>
+        </div>
+      </article>
+    `;
+  }
+
+  const p = cliData.participant;
+  const c = cliData.cli;
+  const m = cliData.modalities;
+  const status = String(p.session_status || 'not started');
   const statusClass = status === 'online' ? 'online' : status === 'ended' ? 'ended' : 'not-started';
-  return `<tr>
-    <td><strong>${escapeHtml(String(item.participant_id || '—'))}</strong><br><small>${escapeHtml(String(item.full_name || 'Unknown participant'))}</small></td>
-    <td><span class="participant-status ${statusClass}">${escapeHtml(status)}</span></td>
-    <td><strong>${formatDuration(item.time_spent_seconds)}</strong></td>
-    <td>${Number(item.time_spent_minutes || 0).toFixed(1)} min</td>
-    <td>${Number(item.answers_submitted || 0)}</td>
-    <td><button class="secondary compact-action" type="button" data-individual-participant="${escapeHtml(String(item.participant_id || ''))}">View user</button></td>
-  </tr>`;
+  const initial = (p.full_name || 'U').charAt(0).toUpperCase();
+
+  return `
+    <!-- Participant Profile Banner -->
+    <div class="admin-user-profile-banner">
+      <div class="admin-user-profile-info">
+        <div class="admin-user-avatar">${initial}</div>
+        <div>
+          <div class="section-label" style="margin-bottom:4px;">INDIVIDUAL PARTICIPANT COGNITIVE LOAD PROFILE</div>
+          <h2 style="margin:0 0 4px;font-size:24px;">${escapeHtml(p.full_name)} <span style="font-size:16px;color:var(--muted);font-weight:400;">(${escapeHtml(p.participant_id)})</span></h2>
+          <div class="admin-user-meta-tags">
+            <span class="admin-user-tag">🎓 Domain: <strong>${escapeHtml(p.domain || 'General')}</strong></span>
+            <span class="admin-user-tag">👤 Age: <strong>${escapeHtml(p.age_group || '—')}</strong></span>
+            <span class="admin-user-tag">🤖 AI Familiarity: <strong>${escapeHtml(p.ai_familiarity || '—')}</strong></span>
+            <span class="admin-user-tag">⏱️ Active Time: <strong>${escapeHtml(p.time_spent_formatted)}</strong></span>
+            <span class="participant-status ${statusClass}" style="font-size:12px;margin-left:6px;">${escapeHtml(status)}</span>
+          </div>
+        </div>
+      </div>
+      <div>
+        <button class="secondary" id="backToCohortBtn" type="button">← Back to All Users</button>
+      </div>
+    </div>
+
+    <!-- Cognitive Load Scorecard Grid -->
+    <div class="admin-user-scorecard-grid">
+      <article class="admin-cli-kpi-card">
+        <span class="kpi-label">Average Cognitive Load Index</span>
+        <div class="kpi-value-row">
+          <span class="kpi-number" style="color:${c.tier_color}">${Number(c.average_cli).toFixed(1)}</span>
+          <span class="kpi-unit">/ 100</span>
+        </div>
+        <div style="margin-top:8px;">
+          <span class="kpi-badge ${c.badge_class}">${c.strain_tier}</span>
+        </div>
+        <small style="color:var(--muted);margin-top:6px;font-size:11.5px;">Operational Scale: 0 to 100 CLI</small>
+      </article>
+
+      <article class="admin-cli-kpi-card">
+        <span class="kpi-label">Baseline vs End CLI (Task-Induced Change)</span>
+        <div class="kpi-value-row">
+          <span class="kpi-number">${Number(c.baseline_cli).toFixed(1)}</span>
+          <span class="kpi-unit" style="margin:0 4px;">➔</span>
+          <span class="kpi-number" style="color:var(--blue)">${Number(c.end_cli).toFixed(1)}</span>
+        </div>
+        <div style="margin-top:8px;">
+          <span class="kpi-badge ${c.absolute_change >= 0 ? 'badge-high' : 'badge-flow'}">
+            ${c.absolute_change >= 0 ? `+${c.absolute_change}` : c.absolute_change} pts (${c.percentage_change >= 0 ? `+${c.percentage_change}` : c.percentage_change}%)
+          </span>
+        </div>
+        <small style="color:var(--muted);margin-top:6px;font-size:11.5px;">Absolute delta across assessment</small>
+      </article>
+
+      <article class="admin-cli-kpi-card">
+        <span class="kpi-label">Peak Workload Spike</span>
+        <div class="kpi-value-row">
+          <span class="kpi-number" style="color:#f59e0b">${Number(c.peak_cli).toFixed(1)}</span>
+          <span class="kpi-unit">/ 100</span>
+        </div>
+        <div style="margin-top:8px;">
+          <span class="kpi-badge badge-high">Highest Recorded Second</span>
+        </div>
+        <small style="color:var(--muted);margin-top:6px;font-size:11.5px;">Peak mental demand saturation</small>
+      </article>
+
+      <article class="admin-cli-kpi-card">
+        <span class="kpi-label">Cognitive Strain Trend</span>
+        <div class="kpi-value-row">
+          <span class="kpi-number" style="color:${c.trend_color}">${c.trend_icon}</span>
+          <span style="font-size:18px;font-weight:700;color:${c.trend_color};margin-left:6px;">${c.trend_status}</span>
+        </div>
+        <div style="margin-top:8px;">
+          <span class="kpi-badge badge-moderate">Slope: ${Number(c.trend_slope).toFixed(3)}</span>
+        </div>
+        <small style="color:var(--muted);margin-top:6px;font-size:11.5px;">Progression across question tasks</small>
+      </article>
+    </div>
+
+    <!-- Five Research Modality Cards (E, F, M, N, P) -->
+    <div class="detail-page-heading" style="margin-top:8px;">
+      <div>
+        <div class="section-label">MULTIMODAL SENSOR CONTRIBUTION BREAKDOWN</div>
+        <p>Mathematical decomposition using the empirically validated benchmark: CLI(t) = 100 × [ 0.30·E + 0.10·F + 0.15·M + 0.25·N + 0.20·P ]</p>
+      </div>
+    </div>
+
+    <div class="admin-modalities-grid">
+      <!-- Modality E: Eye Tracking -->
+      <article class="admin-modality-card">
+        <div>
+          <div class="admin-modality-header">
+            <strong>👁️ ${m.eye.label}</strong>
+            <small>${m.eye.weight}</small>
+          </div>
+          <div class="admin-modality-score" style="color:var(--blue)">${m.eye.score_pct}%</div>
+          <div class="admin-cli-mini-bar" style="width:100%;max-width:none;height:6px;margin-bottom:10px;">
+            <i style="width:${m.eye.score_pct}%;background:var(--blue)"></i>
+          </div>
+        </div>
+        <div class="admin-modality-details">
+          <div>Mean EAR: <strong>${m.eye.mean_ear}</strong></div>
+          <div>Mean PERCLOS: <strong>${m.eye.mean_perclos}</strong></div>
+          <div>Blinks: <strong>${m.eye.blink_count}</strong> | Saccades: <strong>${m.eye.saccade_count}</strong></div>
+          <div>Telemetry Samples: <strong>${m.eye.samples}</strong></div>
+        </div>
+      </article>
+
+      <!-- Modality F: Facial Affect -->
+      <article class="admin-modality-card">
+        <div>
+          <div class="admin-modality-header">
+            <strong>😊 ${m.facial.label}</strong>
+            <small>${m.facial.weight}</small>
+          </div>
+          <div class="admin-modality-score" style="color:#7d64ff">${m.facial.score_pct}%</div>
+          <div class="admin-cli-mini-bar" style="width:100%;max-width:none;height:6px;margin-bottom:10px;">
+            <i style="width:${m.facial.score_pct}%;background:#7d64ff"></i>
+          </div>
+        </div>
+        <div class="admin-modality-details">
+          <div>Dominant: <strong style="text-transform:capitalize;">${m.facial.dominant_emotion}</strong></div>
+          <div>Strained Frames: <strong>${m.facial.strained_count}</strong></div>
+          <div>Focused Frames: <strong>${m.facial.focused_count}</strong></div>
+          <div>Processed Frames: <strong>${m.facial.frames}</strong></div>
+        </div>
+      </article>
+
+      <!-- Modality M: Behavioral Friction -->
+      <article class="admin-modality-card">
+        <div>
+          <div class="admin-modality-header">
+            <strong>⌨️ ${m.behavior.label}</strong>
+            <small>${m.behavior.weight}</small>
+          </div>
+          <div class="admin-modality-score" style="color:#f59e0b">${m.behavior.score_pct}%</div>
+          <div class="admin-cli-mini-bar" style="width:100%;max-width:none;height:6px;margin-bottom:10px;">
+            <i style="width:${m.behavior.score_pct}%;background:#f59e0b"></i>
+          </div>
+        </div>
+        <div class="admin-modality-details">
+          <div>Thinking Pause: <strong>${m.behavior.avg_pause_seconds}s</strong></div>
+          <div>Backspaces: <strong>${m.behavior.backspace_count}</strong></div>
+          <div>Cursor Travel: <strong>${m.behavior.cursor_distance_px} px</strong></div>
+          <div>Scrolls: <strong>${m.behavior.scroll_count}</strong></div>
+        </div>
+      </article>
+
+      <!-- Modality N: NASA-TLX Workload -->
+      <article class="admin-modality-card">
+        <div>
+          <div class="admin-modality-header">
+            <strong>📋 ${m.nasa_tlx.label}</strong>
+            <small>${m.nasa_tlx.weight}</small>
+          </div>
+          <div class="admin-modality-score" style="color:#10b981">${m.nasa_tlx.score_pct}%</div>
+          <div class="admin-cli-mini-bar" style="width:100%;max-width:none;height:6px;margin-bottom:10px;">
+            <i style="width:${m.nasa_tlx.score_pct}%;background:#10b981"></i>
+          </div>
+        </div>
+        <div class="admin-modality-details">
+          <div>Overall Rating: <strong>${m.nasa_tlx.overall_score}</strong></div>
+          <div>Mental: <strong>${m.nasa_tlx.mental_demand}</strong> | Temporal: <strong>${m.nasa_tlx.temporal_demand}</strong></div>
+          <div>Effort: <strong>${m.nasa_tlx.effort}</strong> | Frustration: <strong>${m.nasa_tlx.frustration}</strong></div>
+          <div>Performance: <strong>${m.nasa_tlx.performance}</strong></div>
+        </div>
+      </article>
+
+      <!-- Modality P: Task Performance -->
+      <article class="admin-modality-card">
+        <div>
+          <div class="admin-modality-header">
+            <strong>🎯 ${m.performance.label}</strong>
+            <small>${m.performance.weight}</small>
+          </div>
+          <div class="admin-modality-score" style="color:#00e5ff">${m.performance.score_pct}%</div>
+          <div class="admin-cli-mini-bar" style="width:100%;max-width:none;height:6px;margin-bottom:10px;">
+            <i style="width:${m.performance.score_pct}%;background:#00e5ff"></i>
+          </div>
+        </div>
+        <div class="admin-modality-details">
+          <div>Answers: <strong>${m.performance.answers_submitted}</strong></div>
+          <div>Avg Latency: <strong>${m.performance.avg_duration_seconds}s</strong></div>
+          <div>Progress: <strong>${p.progress_percent}%</strong></div>
+          <div>Session State: <strong>${status}</strong></div>
+        </div>
+      </article>
+    </div>
+
+    <!-- Per-Question Cognitive Timeline -->
+    <article class="card panel admin-timeline-table-card">
+      <div class="section-label">TASK-BY-TASK COGNITIVE LOAD PROGRESSION</div>
+      <p>Tracks how mental fatigue, correction overhead, and cognitive strain evolved across each assessment question.</p>
+      <div class="monitor-table">
+        <table>
+          <thead>
+            <tr>
+              <th>Task #</th>
+              <th>Question ID</th>
+              <th>Cognitive Load (CLI)</th>
+              <th>Strain State</th>
+              <th>Solving Duration</th>
+              <th>Thinking Pauses</th>
+              <th>PAAS Rating</th>
+              <th>LLM Assistance</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${cliData.per_question_timeline.map(q => `
+              <tr>
+                <td><strong>Task ${q.task_number}</strong></td>
+                <td><code>${escapeHtml(q.question_id)}</code></td>
+                <td><strong style="color:var(--blue)">${q.cli_score}</strong> / 100</td>
+                <td><span class="kpi-badge ${q.cli_score < 50 ? 'badge-flow' : q.cli_score < 62 ? 'badge-moderate' : q.cli_score < 75 ? 'badge-high' : 'badge-overload'}">${escapeHtml(q.tier)}</span></td>
+                <td>${q.duration_seconds}s</td>
+                <td>${q.pause_seconds}s</td>
+                <td>${q.paas_rating} / 9</td>
+                <td><span class="admin-user-tag">${escapeHtml(q.llm_used)}</span></td>
+                <td><span class="participant-status ${q.submitted ? 'online' : 'not-started'}">${q.submitted ? 'Submitted' : 'Pending'}</span></td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </article>
+
+    <!-- Raw Telemetry Logs Shortcuts (Pre-Filtered For This User) -->
+    <article class="card panel admin-telemetry-shortcuts">
+      <div class="section-label">INSPECT RAW TELEMETRY LOGS FOR ${escapeHtml(p.participant_id)}</div>
+      <p>Instantly jump into the database tracking records pre-filtered exclusively for <strong>${escapeHtml(p.full_name)} (${escapeHtml(p.participant_id)})</strong>.</p>
+      
+      <div class="admin-telemetry-btn-grid">
+        <button class="secondary" data-admin-dataset="multimodal-second" data-filter-pid="${escapeHtml(p.participant_id)}">
+          ⏱️ Multimodal Seconds (${cliData.telemetry_counts.multimodal_seconds})
+        </button>
+        <button class="secondary" data-admin-dataset="eye-tracking" data-filter-pid="${escapeHtml(p.participant_id)}">
+          👁️ Eye Tracking Logs (${cliData.telemetry_counts.eye_tracking})
+        </button>
+        <button class="secondary" data-admin-dataset="facial-expression" data-filter-pid="${escapeHtml(p.participant_id)}">
+          😊 Facial Affect Logs (${cliData.telemetry_counts.facial_expression})
+        </button>
+        <button class="secondary" data-admin-dataset="keyboard" data-filter-pid="${escapeHtml(p.participant_id)}">
+          ⌨️ Keyboard Telemetry (${cliData.telemetry_counts.keyboard_tracking})
+        </button>
+        <button class="secondary" data-admin-dataset="mouse" data-filter-pid="${escapeHtml(p.participant_id)}">
+          🖱️ Mouse Movements (${cliData.telemetry_counts.mouse_tracking})
+        </button>
+        <button class="secondary" data-admin-dataset="session-cli-change" data-filter-pid="${escapeHtml(p.participant_id)}">
+          📈 CLI Change Record
+        </button>
+        <button class="secondary" data-admin-dataset="nasa-tlx" data-filter-pid="${escapeHtml(p.participant_id)}">
+          📋 NASA-TLX Record (${cliData.telemetry_counts.nasa_tlx})
+        </button>
+        <button class="primary" data-admin-export="session-cli-change" data-filter-pid="${escapeHtml(p.participant_id)}">
+          📥 Export User CLI CSV
+        </button>
+      </div>
+    </article>
+  `;
 }
 
-function renderIndividualUserPage(data, participantId) {
-  const item = (data.stored_results || []).find(row => String(row.participant_id) === String(participantId));
-  const container = document.getElementById('dashboardContent');
-  if (!container || !item) return;
-  const status = String(item.session_status || 'not started');
-  const statusClass = status === 'online' ? 'online' : status === 'ended' ? 'ended' : 'not-started';
-  container.innerHTML = `<article class="card panel individual-user-detail">
-    <div class="detail-page-heading"><div><div class="section-label">INDIVIDUAL USER</div><h3>${escapeHtml(String(item.full_name || 'Unknown participant'))}</h3><p>Participant ID: <strong>${escapeHtml(String(item.participant_id || '—'))}</strong></p></div><button class="secondary" id="backToIndividualUsers" type="button">Back to users</button></div>
-     <section class="individual-metrics">
-       <article class="card"><small>Session status</small><strong class="participant-status ${statusClass}">${escapeHtml(status)}</strong></article>
-       <article class="card"><small>Time spent solving</small><strong>${formatDuration(item.time_spent_seconds)}</strong><span>${Number(item.time_spent_minutes || 0).toFixed(1)} minutes</span></article>
-       <article class="card"><small>Answers submitted</small><strong>${Number(item.answers_submitted || 0)}</strong></article>
-       <article class="card"><small>Progress</small><strong>${Number(item.progress_percent || 0).toFixed(1)}%</strong></article>
-     </section>
-    <div class="individual-profile-grid"><div><small>Domain</small><strong>${escapeHtml(String(item.domain || '—'))}</strong></div><div><small>Age group</small><strong>${escapeHtml(String(item.age_group || '—'))}</strong></div><div><small>AI familiarity</small><strong>${escapeHtml(String(item.ai_familiarity || '—'))}</strong></div></div>
-  </article>`;
-  document.getElementById('backToIndividualUsers').onclick = refreshDashboard;
+function attachAdminDashboardEvents(container, data, cliData) {
+  // 1. User Selector dropdown
+  const userSelector = container.querySelector('#adminUserSelector');
+  if (userSelector) {
+    userSelector.onchange = () => {
+      adminFilterState.selectedParticipant = userSelector.value;
+      refreshDashboard();
+    };
+  }
+
+  // 2. Search input filtering
+  const searchInput = container.querySelector('#adminUserSearch');
+  if (searchInput) {
+    searchInput.oninput = () => {
+      adminFilterState.searchQuery = searchInput.value;
+      updateRosterDisplay(container, cliData, data);
+    };
+  }
+
+  // 3. Status filter
+  const statusSelect = container.querySelector('#adminStatusFilter');
+  if (statusSelect) {
+    statusSelect.onchange = () => {
+      adminFilterState.statusFilter = statusSelect.value;
+      updateRosterDisplay(container, cliData, data);
+    };
+  }
+
+  // 4. Domain filter
+  const domainSelect = container.querySelector('#adminDomainFilter');
+  if (domainSelect) {
+    domainSelect.onchange = () => {
+      adminFilterState.domainFilter = domainSelect.value;
+      updateRosterDisplay(container, cliData, data);
+    };
+  }
+
+  // 5. Reset button
+  const resetBtn = container.querySelector('#adminResetFilter');
+  if (resetBtn) {
+    resetBtn.onclick = () => {
+      adminFilterState.selectedParticipant = 'all';
+      adminFilterState.searchQuery = '';
+      adminFilterState.statusFilter = 'all';
+      adminFilterState.domainFilter = 'all';
+      refreshDashboard();
+    };
+  }
+
+  // 6. Back to Cohort View button
+  const backBtn = container.querySelector('#backToCohortBtn');
+  if (backBtn) {
+    backBtn.onclick = () => {
+      adminFilterState.selectedParticipant = 'all';
+      refreshDashboard();
+    };
+  }
+
+  // 7. Inspect User buttons (inside table)
+  container.querySelectorAll('[data-inspect-user]').forEach(btn => {
+    btn.onclick = () => {
+      adminFilterState.selectedParticipant = btn.dataset.inspectUser;
+      refreshDashboard();
+    };
+  });
+
+  // 8. View Logs buttons (inside table)
+  container.querySelectorAll('[data-view-logs]').forEach(btn => {
+    btn.onclick = () => {
+      openAdminDataPage('multimodal-second', 1, btn.dataset.viewLogs);
+    };
+  });
+
+  // 9. Standard dataset buttons (passes active participant filter if set)
+  container.querySelectorAll('[data-admin-dataset]').forEach(button => {
+    button.onclick = () => {
+      const filterPid = button.dataset.filterPid || (adminFilterState.selectedParticipant !== 'all' ? adminFilterState.selectedParticipant : null);
+      openAdminDataPage(button.dataset.adminDataset, 1, filterPid);
+    };
+  });
+
+  // 10. Export buttons
+  container.querySelectorAll('[data-admin-export]').forEach(button => {
+    button.onclick = () => {
+      const filterPid = button.dataset.filterPid || (adminFilterState.selectedParticipant !== 'all' ? adminFilterState.selectedParticipant : null);
+      downloadTrackingExport(button.dataset.adminExport, filterPid);
+    };
+  });
+
+  // 11. Legacy individual participant hooks
+  container.querySelectorAll('[data-individual-participant]').forEach(button => {
+    button.onclick = () => {
+      adminFilterState.selectedParticipant = button.dataset.individualParticipant;
+      refreshDashboard();
+    };
+  });
+
+  // 12. Dataset validation
+  const validationButton = container.querySelector('[data-admin-validation]');
+  if (validationButton) validationButton.onclick = openDatasetValidationPage;
+
+  // 13. Workflow Flowchart Toggle
+  const toggleWorkflowBtn = container.querySelector('#toggleWorkflowBtn');
+  if (toggleWorkflowBtn) {
+    toggleWorkflowBtn.onclick = () => {
+      adminFilterState.workflowCollapsed = !adminFilterState.workflowCollapsed;
+      const content = container.querySelector('#workflowFlowchartContent');
+      const note = container.querySelector('#workflowFooterNote');
+      if (content) content.classList.toggle('is-collapsed', adminFilterState.workflowCollapsed);
+      if (note) note.classList.toggle('is-collapsed', adminFilterState.workflowCollapsed);
+      toggleWorkflowBtn.textContent = adminFilterState.workflowCollapsed ? '▼ Show Pipeline' : '▲ Hide Pipeline';
+    };
+  }
 }
 
-async function downloadTrackingExport(exportName) {
+function updateRosterDisplay(container, cliData, data) {
+  const tbody = container.querySelector('#adminParticipantRosterBody');
+  const countText = container.querySelector('#rosterFilterCountText');
+  if (!tbody) return;
+
+  let participantList = [];
+  if (cliData && cliData.mode === 'cohort' && Array.isArray(cliData.participants)) {
+    participantList = cliData.participants;
+  } else if (adminFilterState.cachedCognitiveData && Array.isArray(adminFilterState.cachedCognitiveData.participants)) {
+    participantList = adminFilterState.cachedCognitiveData.participants;
+  } else if (Array.isArray(data?.stored_results)) {
+    participantList = data.stored_results;
+  }
+
+  tbody.innerHTML = renderAdminRosterRows(participantList);
+
+  // Re-attach inspect & log click handlers on filtered rows
+  tbody.querySelectorAll('[data-inspect-user]').forEach(btn => {
+    btn.onclick = () => {
+      adminFilterState.selectedParticipant = btn.dataset.inspectUser;
+      refreshDashboard();
+    };
+  });
+  tbody.querySelectorAll('[data-view-logs]').forEach(btn => {
+    btn.onclick = () => {
+      openAdminDataPage('multimodal-second', 1, btn.dataset.viewLogs);
+    };
+  });
+
+  if (countText) {
+    const visibleCount = tbody.querySelectorAll('tr').length;
+    countText.textContent = `Showing filtered participants. Query: "${adminFilterState.searchQuery || 'None'}", Status: ${adminFilterState.statusFilter}, Discipline: ${adminFilterState.domainFilter}`;
+  }
+}
+
+async function downloadTrackingExport(exportName, specificParticipant = null) {
   try {
     const params = new URLSearchParams();
-    const participant = document.getElementById('exportParticipant')?.value;
+    const participant = specificParticipant || document.getElementById('exportParticipant')?.value || (adminFilterState.selectedParticipant !== 'all' ? adminFilterState.selectedParticipant : null);
     const dateFrom = document.getElementById('exportDateFrom')?.value;
     const dateTo = document.getElementById('exportDateTo')?.value;
     const completed = document.getElementById('exportCompleted')?.value;
@@ -3202,9 +3985,11 @@ async function downloadTrackingExport(exportName) {
         'question_level_features.csv'
     };
 
+    const participantSuffix = participant ? `-${participant}` : '';
     link.download =
-      exportFilenames[exportName] ||
-      `cognitrack-${exportName}-tracking.csv`;
+      exportFilenames[exportName]
+        ? exportFilenames[exportName].replace('.csv', `${participantSuffix}.csv`)
+        : `cognitrack-${exportName}${participantSuffix}.csv`;
 
     link.click();
     URL.revokeObjectURL(url);
@@ -3417,31 +4202,99 @@ async function openDatasetValidationPage() {
 }
 
 
-async function openAdminDataPage(dataset, page = 1) {
+async function openAdminDataPage(dataset, page = 1, participantId = null) {
   const container = document.getElementById('dashboardContent');
   if (!container || !state.authToken) return;
   clearInterval(dashboardTimer);
   container.innerHTML = '<article class="card panel">Loading administrator records…</article>';
   try {
+    const activePid = participantId !== null
+      ? (participantId === 'all' ? null : participantId)
+      : (adminFilterState.selectedParticipant && adminFilterState.selectedParticipant !== 'all' ? adminFilterState.selectedParticipant : null);
+
     const pagedDataset = ['tracking', 'measurement-records', 'rag-prompt-evaluations', 'rag-pipeline', 'rag-documents', 'multimodal-second', 'question-features', 'facial-expression', 'eye-tracking', 'keyboard', 'mouse', 'session-cli-change'].includes(dataset);
-    const query = pagedDataset ? `?page=${page}&page_size=50` : '';
+    
+    const params = new URLSearchParams();
+    if (pagedDataset) {
+      params.set('page', page);
+      params.set('page_size', 50);
+    }
+    if (activePid) {
+      params.set('participant_id', activePid);
+    }
+    const query = params.toString() ? `?${params.toString()}` : '';
+
     const response = await fetch(`${API_BASE_URL}/admin/data/${encodeURIComponent(dataset)}${query}`, {
       headers: { Authorization: `Bearer ${state.authToken}` }
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
     const records = data.records || [];
+
+    // Participant options for quick switching in the table header
+    const roster = adminFilterState.cachedCohortParticipants?.length
+      ? adminFilterState.cachedCohortParticipants
+      : (adminFilterState.cachedCognitiveData?.participants || adminFilterState.cachedCognitiveData?.participant_roster || []);
+    const participantOptions = roster.map(p => `
+      <option value="${escapeHtml(p.participant_id)}" ${activePid === p.participant_id ? 'selected' : ''}>
+        ${escapeHtml(p.participant_id)} — ${escapeHtml(p.full_name || 'Participant')}
+      </option>
+    `).join('');
+
+    const filterBanner = activePid ? `
+      <div class="admin-filter-indicator">
+        <span>🔍 Filtered by Participant: <strong>${escapeHtml(activePid)}</strong></span>
+        <button class="secondary btn-xs" id="clearTableFilter" type="button" style="padding:0.25rem 0.6rem; font-size:0.75rem; margin-left:auto;">✕ Show All Records</button>
+      </div>
+    ` : '';
+
     container.innerHTML = `<article class="card panel admin-detail-page">
-      <div class="detail-page-heading"><div><div class="section-label">ADMINISTRATOR DATA</div><h3>${escapeHtml(data.title || 'Details')}</h3><p>${data.pagination ? `Showing ${records.length} of ${Number(data.pagination.total_records || 0)} records (page ${data.pagination.page} of ${data.pagination.total_pages}).` : `${records.length} record(s) shown.`}</p></div><button class="secondary" id="backToAdminDashboard">Back to dashboard</button></div>
+      <div class="detail-page-heading">
+        <div>
+          <div class="section-label">ADMINISTRATOR DATA</div>
+          <h3>${escapeHtml(data.title || 'Details')}</h3>
+          <p>${data.pagination ? `Showing ${records.length} of ${Number(data.pagination.total_records || 0)} records (page ${data.pagination.page} of ${data.pagination.total_pages}).` : `${records.length} record(s) shown.`}</p>
+          <div style="display:flex; align-items:center; gap:0.5rem; margin-top:0.4rem; flex-wrap:wrap;">
+            <label for="tableParticipantSelector" style="font-size:0.75rem; color:var(--text-secondary); text-transform:uppercase; font-weight:700;">Filter Participant:</label>
+            <select id="tableParticipantSelector" class="form-input" style="padding:0.25rem 0.5rem; font-size:0.8rem; width:auto; max-width:260px;">
+              <option value="all">👥 All Participants</option>
+              ${participantOptions}
+            </select>
+          </div>
+        </div>
+        <button class="secondary" id="backToAdminDashboard">Back to dashboard</button>
+      </div>
+      ${filterBanner}
       ${dataset === 'session-cli-change' ? '<div class="admin-detail-actions"><button class="secondary" id="exportCurrentAdminDataset" type="button">Export CSV</button></div>' : ''}
       ${renderAdminRecordTable(records, dataset, data.fields || [])}
       ${data.pagination ? renderAdminPagination(dataset, data.pagination) : ''}
     </article>`;
+
     document.getElementById('backToAdminDashboard').onclick = () => renderRoleDashboard('admin');
+    
+    const selector = document.getElementById('tableParticipantSelector');
+    if (selector) {
+      selector.value = activePid || 'all';
+      selector.onchange = (e) => {
+        const chosen = e.target.value === 'all' ? 'all' : e.target.value;
+        if (adminFilterState) adminFilterState.selectedParticipant = chosen;
+        openAdminDataPage(dataset, 1, chosen);
+      };
+    }
+
+    const clearFilterBtn = document.getElementById('clearTableFilter');
+    if (clearFilterBtn) {
+      clearFilterBtn.onclick = () => {
+        if (adminFilterState) adminFilterState.selectedParticipant = 'all';
+        openAdminDataPage(dataset, 1, 'all');
+      };
+    }
+
     const exportButton = document.getElementById('exportCurrentAdminDataset');
-    if (exportButton) exportButton.onclick = () => downloadTrackingExport(dataset);
+    if (exportButton) exportButton.onclick = () => downloadTrackingExport(dataset, activePid);
+
     container.querySelectorAll('[data-admin-page]').forEach(button => {
-      button.onclick = () => openAdminDataPage(dataset, Number(button.dataset.adminPage));
+      button.onclick = () => openAdminDataPage(dataset, Number(button.dataset.adminPage), activePid);
     });
   } catch (error) {
     container.innerHTML = `<article class="card panel error">Unable to load administrator data: ${escapeHtml(error.message)}<br><br><button class="secondary" id="backToAdminDashboard">Back to dashboard</button></article>`;

@@ -50,6 +50,7 @@ from session_cli_analysis import build_session_cli_summary
 from feature_importance import calculate_feature_importances
 from model_accuracy import calculate_model_accuracies
 from research_metrics_data import RESEARCH_METRICS
+from cognitive_load_service import compute_participant_cognitive_load, compute_cohort_cognitive_load
 
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent
@@ -3509,11 +3510,29 @@ def persist_prompt_tracking_summaries() -> list[dict[str, Any]]:
     return summaries
 
 
+@app.get("/api/admin/cognitive-load/summary")
+def admin_cognitive_load_summary(
+    participant_id: str | None = None,
+    include_test_mode: bool = True,
+    role: str = Depends(authenticated_role),
+) -> dict[str, Any]:
+    """Return platform-wide cohort cognitive load stats or granular participant breakdown."""
+    if role not in {"admin", "dashboard"}:
+        raise HTTPException(status_code=403, detail="Administrator access required")
+    if participant_id and participant_id.strip() and participant_id.strip().lower() not in {"all", "all users", "cohort"}:
+        res = compute_participant_cognitive_load(participant_id.strip(), storage)
+        if not res:
+            raise HTTPException(status_code=404, detail="Participant not found")
+        return res
+    return compute_cohort_cognitive_load(storage, include_test_mode=include_test_mode)
+
+
 @app.get("/api/admin/data/{dataset}")
 def admin_tracking_data(
     dataset: str,
     page: int = 1,
     page_size: int = 50,
+    participant_id: str | None = None,
     role: str = Depends(authenticated_role),
 ) -> dict[str, Any]:
     if role != "admin":
@@ -3555,6 +3574,7 @@ def admin_tracking_data(
     if selected is None:
         raise HTTPException(status_code=404, detail="Unknown administrator dataset")
     title, component_type, fields = selected
+    active_pid = participant_id.strip() if participant_id and participant_id.strip() and participant_id.strip().lower() not in {"all", "all users", "cohort"} else None
     if dataset == "measurement-records":
         custom_fields = [
             field for field in storage.table_columns("measurement_records")
@@ -3567,6 +3587,7 @@ def admin_tracking_data(
             "measurement_records",
             bounded_page_size,
             (bounded_page - 1) * bounded_page_size,
+            participant_id=active_pid,
         )
         records = [
             {field: row.get(field, "") for field in all_fields}
@@ -3587,7 +3608,7 @@ def admin_tracking_data(
         }
     if dataset in {"rag-prompt-evaluations", "rag-pipeline", "rag-documents", "multimodal-second", "question-features", "facial-expression", "eye-tracking", "keyboard", "mouse", "session-cli-change"}:
         # These are tracking views. Keep filtering, counting, and paging in
-        # PostgreSQL; never materialize the full tracking table in Python.
+        # PostgreSQL/SQLite; never materialize the full tracking table in Python.
         bounded_page_size = max(1, min(page_size, 100))
         bounded_page = max(1, page)
         if dataset == "rag-prompt-evaluations":
@@ -3624,6 +3645,7 @@ def admin_tracking_data(
             (bounded_page - 1) * bounded_page_size,
             component_type=source_component,
             record_kind="second" if dataset == "multimodal-second" else None,
+            participant_id=active_pid,
         )
         records = [
             {field: row.get(field, "") for field in source_fields}
@@ -3643,16 +3665,25 @@ def admin_tracking_data(
             },
         }
     if dataset == "nasa-tlx":
+        all_rows = storage.list_records(component_type, 50_000)
+        if active_pid:
+            all_rows = [r for r in all_rows if str(r.get("participant_id") or "") == active_pid]
         records = [
             {field: row.get(field, "") for field in fields}
-            for row in storage.list_records(component_type, 50_000)
+            for row in all_rows
         ]
         return {"success": True, "dataset": dataset, "title": title, "records": records}
     if dataset == "prompt-tracking":
         persist_prompt_tracking_summaries()
+        source_rows = storage.list_records("tracking_data", 50_000)
+        if active_pid:
+            source_rows = [
+                row for row in source_rows
+                if str(row.get("participant_id") or "") == active_pid or str(row.get("participant_name") or "") == active_pid
+            ]
         records = [
             {field: row.get(field, "") for field in PROMPT_TRACKING_FIELDS}
-            for row in storage.list_records("tracking_data", 50_000)
+            for row in source_rows
             if row.get("component_type") == "prompt_tracking"
         ]
         return {
@@ -3662,13 +3693,19 @@ def admin_tracking_data(
             "records": records,
         }
     records = []
-    for row in storage.list_records("tracking_data", 50_000):
+    source_tracking = storage.list_records("tracking_data", 50_000)
+    if active_pid:
+        source_tracking = [r for r in source_tracking if str(r.get("participant_id") or "") == active_pid]
+    for row in source_tracking:
         if row.get("component_type") == component_type:
             records.append({field: row.get(field, "") for field in fields})
     if dataset == "participants":
+        all_p = storage.list_records("participants", 50_000)
+        if active_pid:
+            all_p = [r for r in all_p if str(r.get("participant_id") or "") == active_pid]
         records = [
             {field: row.get(field, "") for field in fields}
-            for row in storage.list_records("participants", 50_000)
+            for row in all_p
         ]
         for record in records:
             digits = "".join(character for character in str(record.get("participant_id", "")) if character.isdigit())
@@ -3683,6 +3720,7 @@ def admin_tracking_data(
             "tracking_data",
             bounded_page_size,
             (bounded_page - 1) * bounded_page_size,
+            participant_id=active_pid,
         )
         records = [{key: value for key, value in row.items() if key not in excluded} for row in rows]
         fields = [key for key in storage.table_columns("tracking_data") if key not in excluded]

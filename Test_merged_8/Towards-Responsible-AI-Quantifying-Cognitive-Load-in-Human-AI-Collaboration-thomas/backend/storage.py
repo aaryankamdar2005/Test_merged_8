@@ -353,6 +353,7 @@ class PostgresStorage:
         offset: int = 0,
         component_type: str | None = None,
         record_kind: str | None = None,
+        participant_id: str | None = None,
     ) -> tuple[list[dict[str, Any]], int]:
         """Return one bounded page and total count for Admin data views."""
         table_name = table.removesuffix(".csv")
@@ -373,6 +374,26 @@ class PostgresStorage:
                 if record_kind is not None:
                     where += " AND \"record_kind\" = %s" if where else " WHERE \"record_kind\" = %s"
                     params.append(record_kind)
+                if participant_id is not None and str(participant_id).strip():
+                    pid = str(participant_id).strip()
+                    cursor.execute(
+                        "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = %s",
+                        (table_name,),
+                    )
+                    cols = {r["column_name"] for r in cursor.fetchall()}
+                    if "participant_id" in cols and "user_id" in cols:
+                        cond = " (\"participant_id\" = %s OR \"user_id\" = %s)"
+                        params.extend([pid, pid])
+                    elif "participant_id" in cols:
+                        cond = " \"participant_id\" = %s"
+                        params.append(pid)
+                    elif "user_id" in cols:
+                        cond = " \"user_id\" = %s"
+                        params.append(pid)
+                    else:
+                        cond = None
+                    if cond:
+                        where += f" AND{cond}" if where else f" WHERE{cond}"
                 cursor.execute(f"SELECT COUNT(*) AS total FROM {quoted_table}{where}", params)
                 total = int(cursor.fetchone()["total"])
                 cursor.execute(
@@ -563,12 +584,18 @@ class SqliteStorage:
                 f"SELECT COUNT(*) FROM {self._identifier(table_name)}"
             ).fetchone()[0])
 
-    def list_records_page(self, table: str, limit: int = 50, offset: int = 0, component_type: str | None = None, record_kind: str | None = None) -> tuple[list[dict[str, Any]], int]:
+    def list_records_page(self, table: str, limit: int = 50, offset: int = 0, component_type: str | None = None, record_kind: str | None = None, participant_id: str | None = None) -> tuple[list[dict[str, Any]], int]:
         records = self.list_records(table, 100000)
         if component_type is not None:
             records = [row for row in records if row.get("component_type") == component_type]
         if record_kind is not None:
             records = [row for row in records if row.get("record_kind") == record_kind]
+        if participant_id is not None and str(participant_id).strip():
+            pid = str(participant_id).strip()
+            records = [
+                row for row in records
+                if str(row.get("participant_id") or "") == pid or str(row.get("user_id") or "") == pid
+            ]
         safe_limit = max(1, min(int(limit), 500))
         safe_offset = max(0, int(offset))
         return records[safe_offset:safe_offset + safe_limit], len(records)
